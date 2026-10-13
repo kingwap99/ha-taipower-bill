@@ -3,23 +3,23 @@
     "step": {
       "user": {
         "title": "Taipower bill tracking",
-        "description": "One entry per meter. Enter the previous meter-read date printed on your bill.",
+        "description": "One entry per meter. Enter the initial meter-read date printed on your bill. After that, meter reads are kept as a list (via the close button or the services); this value is only used the first time the list is created.",
         "data": {
           "label": "Household label",
           "source_entities": "Usage source (kWh sensors, multiple allowed)",
           "source_mode": "Usage source mode",
-          "last_read_date": "Previous meter-read date",
+          "last_read_date": "Initial meter-read date (first setup only)",
           "cycle_days": "Days between meter reads"
         }
       },
       "reconfigure": {
         "title": "Reconfigure",
-        "description": "A wrong meter-read date (e.g. the Close period button pressed a few extra times) pushes the period window into the future and blanks every value. Set the real date from your bill; tick the box below to also drop the bad history rows.",
+        "description": "The meter-read list is the only source of truth; if it is wrong, fix it with the set_last_read_date / update_reading services, or re-enter the initial date here and tick the box below to clear the history. A wrong initial date (e.g. the Close period button pressed a few extra times) pushes the period window into the future and blanks every value; tick the box below to also drop the bad history rows.",
         "data": {
           "label": "Household label",
           "source_entities": "Usage source (kWh sensors, multiple allowed)",
           "source_mode": "Usage source mode",
-          "last_read_date": "Previous meter-read date",
+          "last_read_date": "Initial meter-read date (first setup only)",
           "cycle_days": "Days between meter reads",
           "reset_history": "Also clear closed-period history"
         }
@@ -77,14 +77,22 @@
       "days_remaining": { "name": "Days until next read" },
       "next_read_date": { "name": "Next projected read date" },
       "bill_variance": { "name": "Estimate vs actual variance" },
-      "closed_periods": { "name": "Closed periods" }
+      "closed_periods": { "name": "Closed periods" },
+      "last_period_kwh": { "name": "Previous period energy" },
+      "last_period_cost": { "name": "Previous period cost" },
+      "last_period_avg_price": { "name": "Previous period average price" },
+      "prev_period_kwh": { "name": "Period before last energy" },
+      "prev_period_cost": { "name": "Period before last cost" },
+      "pending_close_date": { "name": "Pending meter-read date" }
     },
     "number": {
       "manual_period_kwh": { "name": "Period usage (manual)" },
       "actual_bill": { "name": "Actual billed amount" }
     },
     "button": {
-      "close_period": { "name": "Close period" }
+      "close_period": { "name": "Close period" },
+      "confirm_close": { "name": "Confirm close" },
+      "cancel_close": { "name": "Cancel close" }
     }
   }
 }

@@ -1,8 +1,17 @@
-"""Sensors for Taipower Bill."""
+"""Sensors for Taipower Bill.
+
+Every sensor of one config entry publishes the *same* attribute block (label,
+period window, the read-date list, the per-period history, the pending 結算,
+the tier/segment detail of the current period …).  That is deliberate: the
+Lovelace card then works whichever entity it is pointed at, and the recorder
+de-duplicates identical attribute payloads (``states_attributes`` is keyed by
+the payload hash), so repeating the block across the entities does not multiply
+the rows in the database.
+"""
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 import homeassistant.util.dt as dt_util
@@ -29,7 +38,25 @@ _VALUE_KEYS: dict[str, str] = {
     "next_read_date": "next_read_date",
     "bill_variance": "bill_variance",
     "closed_periods": "history_len",
+    "last_period_kwh": "last_period_kwh",
+    "last_period_cost": "last_period_cost",
+    "last_period_avg_price": "last_period_avg_price",
+    "prev_period_kwh": "prev_period_kwh",
+    "prev_period_cost": "prev_period_cost",
+    "pending_close_date": "pending_close_date",
 }
+
+#: Sensors whose state is a date.  A HA ``date`` sensor must not carry a unit
+#: and must be given an ISO string (or a date), not a float.
+_DATE_KEYS = {"next_read_date", "pending_close_date"}
+
+
+def _iso(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value)
 
 
 async def async_setup_entry(
@@ -62,10 +89,13 @@ class TaipowerBillSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> Any:
+        key = self.entity_description.key
         data = self.coordinator.data or {}
-        if self.entity_description.key == "closed_periods":
+        if key == "closed_periods":
             return len(data.get(ATTR_HISTORY) or [])
-        value = data.get(_VALUE_KEYS.get(self.entity_description.key, ""))
+        value = data.get(_VALUE_KEYS.get(key, ""))
+        if key in _DATE_KEYS:
+            return _iso(value)
         if isinstance(value, float):
             return round(value, 3)
         return value
@@ -75,15 +105,19 @@ class TaipowerBillSensor(CoordinatorEntity, SensorEntity):
         """Start of the billing period -- the reset point of the ``total`` sensors.
 
         ``state_class: total`` means "accumulates, and restarts wherever
-        last_reset moves".  本期度數 and 本期電費 do exactly that at 結算本期, so
-        declaring the reset point keeps the recorder's long-term statistics
-        honest instead of reading the new period as a huge negative change.  The
-        other sensors are plain measurements and must not set this.
+        last_reset moves".  本期度數 and 本期電費 do exactly that when a 抄見日 is
+        written, so declaring the reset point keeps the recorder's long-term
+        statistics honest instead of reading the new period as a huge negative
+        change.  The other sensors are plain measurements and must not set this
+        (``state_attributes`` raises if a non-``total`` sensor has it).
         """
         if self.entity_description.state_class != SensorStateClass.TOTAL:
             return None
-        data = self.coordinator.data or {}
-        start = data.get("period_start") or self.coordinator.period_start
+        start = (self.coordinator.data or {}).get("period_start") or self.coordinator.period_start
+        if start is None:
+            # No usable window yet: ``total`` without a reset point is still
+            # legal (it then behaves like total_increasing).
+            return None
         return dt_util.start_of_local_day(start)
 
     @property
@@ -93,25 +127,55 @@ class TaipowerBillSensor(CoordinatorEntity, SensorEntity):
         attrs: dict[str, Any] = {
             "label": data.get("label"),
             "usage_source": data.get("usage_source"),
-            "period_start": data.get("period_start").isoformat() if data.get("period_start") else None,
-            "period_end": data.get("period_end").isoformat() if data.get("period_end") else None,
-            "last_read_date": self.coordinator.last_read_date.isoformat(),
+            "period_start": _iso(data.get("period_start")),
+            "period_end": _iso(data.get("period_end")),
+            "next_read_date": _iso(data.get("next_read_date")),
+            "last_read_date": _iso(data.get("last_read_date")),
+            "suggested_read_date": _iso(data.get("suggested_read_date")),
             "days_elapsed": data.get("days_elapsed"),
-            "cycle_days": self.coordinator.cycle_days,
+            "days_in_period": data.get("days_in_period"),
+            "days_remaining": data.get("days_remaining"),
+            "cycle_days": data.get("cycle_days") or self.coordinator.cycle_days,
+            "period_has_started": data.get("period_has_started"),
+            "period_has_ended": data.get("period_has_ended"),
+            "period_note": data.get("period_note"),
+            "cost": data.get("cost"),
+            "avg_daily_kwh": data.get("avg_daily_kwh"),
+            "projected_kwh": data.get("projected_kwh"),
+            "projected_cost": data.get("projected_cost"),
+            "bill_variance": data.get("bill_variance"),
             "config_warning": data.get("config_warning"),
             "config_issues": data.get("config_issues") or [],
+            ATTR_HISTORY: data.get(ATTR_HISTORY) or [],
+            "history_len": data.get("history_len") or 0,
+            "last_period_start": data.get("last_period_start"),
+            "last_period_end": data.get("last_period_end"),
+            "last_period_days": data.get("last_period_days"),
+            "last_period_kwh": data.get("last_period_kwh"),
+            "last_period_cost": data.get("last_period_cost"),
+            "last_period_estimated_cost": data.get("last_period_estimated_cost"),
+            "last_period_actual_cost": data.get("last_period_actual_cost"),
+            "last_period_variance": data.get("last_period_variance"),
+            "last_period_avg_price": data.get("last_period_avg_price"),
+            "last_period_source": data.get("last_period_source"),
+            "prev_period_start": data.get("prev_period_start"),
+            "prev_period_end": data.get("prev_period_end"),
+            "prev_period_kwh": data.get("prev_period_kwh"),
+            "prev_period_cost": data.get("prev_period_cost"),
+            "prev_period_avg_price": data.get("prev_period_avg_price"),
+            "readings": data.get("readings") or [],
+            "pending_close": data.get("pending_close"),
+            "pending_close_date": data.get("pending_close_date"),
+            "pending_close_seconds_left": data.get("pending_close_seconds_left"),
+            "actual_bill": data.get("actual_bill"),
+            "stats_coverage_start": _iso(data.get("stats_coverage_start")),
+            "stats_last_day": _iso(data.get("stats_last_day")),
+            "stats_error": data.get("stats_error"),
+            "stats_write_error": data.get("stats_write_error"),
         }
-        if data.get("stats_coverage_start"):
-            attrs["stats_coverage_start"] = data["stats_coverage_start"].isoformat()
-        if data.get("stats_last_day"):
-            # Today's statistics row is still partial, so this is "covered up to".
-            attrs["stats_last_day"] = data["stats_last_day"].isoformat()
-        if data.get("stats_error"):
-            attrs["stats_error"] = data["stats_error"]
         if bill is not None:
-            # bill.as_attributes() uses bill_window_* keys precisely so it cannot
-            # overwrite the period_* values set above.
+            # as_attributes() brings kwh / energy_cost / tiers / segments and
+            # names its own window bill_window_* precisely so it cannot clash
+            # with the period_* values above.
             attrs.update(bill.as_attributes())
-        if self.entity_description.key == "closed_periods":
-            attrs[ATTR_HISTORY] = data.get(ATTR_HISTORY) or []
         return attrs

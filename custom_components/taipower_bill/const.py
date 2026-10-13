@@ -59,7 +59,11 @@ ATTR_HISTORY = "history"
 ATTR_SEGMENTS = "segments"
 ATTR_TIERS = "tiers"
 
-STORAGE_VERSION = 1
+# v1 stored ``{"periods": [...]}`` (event driven: one row per 結算本期 press).
+# v2 stores ``{"readings": [...]}`` (data driven: the list of actual 抄見日 that
+# every billing period is derived from).  ``coordinator._async_migrate_store``
+# keeps the v1 payload and ``TaipowerLedger.migrate`` reshapes it on load.
+STORAGE_VERSION = 2
 STORAGE_PREFIX = f"{DOMAIN}_ledger"
 
 
@@ -158,5 +162,53 @@ SENSOR_DESCRIPTIONS: tuple[TaipowerSensorDescription, ...] = (
         translation_key="closed_periods",
         state_class=SensorStateClass.MEASUREMENT,
         icon="mdi:file-document-multiple-outline",
+    ),
+    # 「上一期／上上期」: fixed amounts from already-closed periods, so they carry
+    # a device_class but no state_class.  They do not accumulate and must not
+    # claim ``measurement`` under energy/monetary (see the note above).
+    TaipowerSensorDescription(
+        key="last_period_kwh",
+        translation_key="last_period_kwh",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        icon="mdi:history",
+        suggested_display_precision=1,
+    ),
+    TaipowerSensorDescription(
+        key="last_period_cost",
+        translation_key="last_period_cost",
+        native_unit_of_measurement=UNIT_TWD,
+        device_class=SensorDeviceClass.MONETARY,
+        icon="mdi:receipt-text-check-outline",
+        suggested_display_precision=0,
+    ),
+    TaipowerSensorDescription(
+        key="last_period_avg_price",
+        translation_key="last_period_avg_price",
+        native_unit_of_measurement=UNIT_TWD_PER_KWH,
+        icon="mdi:cash-multiple",
+        suggested_display_precision=3,
+    ),
+    TaipowerSensorDescription(
+        key="prev_period_kwh",
+        translation_key="prev_period_kwh",
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        device_class=SensorDeviceClass.ENERGY,
+        icon="mdi:history",
+        suggested_display_precision=1,
+    ),
+    TaipowerSensorDescription(
+        key="prev_period_cost",
+        translation_key="prev_period_cost",
+        native_unit_of_measurement=UNIT_TWD,
+        device_class=SensorDeviceClass.MONETARY,
+        icon="mdi:receipt-text-check-outline",
+        suggested_display_precision=0,
+    ),
+    TaipowerSensorDescription(
+        key="pending_close_date",
+        translation_key="pending_close_date",
+        device_class=SensorDeviceClass.DATE,
+        icon="mdi:calendar-question",
     ),
 )

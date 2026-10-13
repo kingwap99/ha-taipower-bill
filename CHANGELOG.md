@@ -1,5 +1,62 @@
 # Changelog
 
+## 0.2.0 — 2026-10-14
+
+把整個帳期模型換掉：**結算不再是一個「事件」，而是一份可以事後修改的清單。**
+
+起因是一句回報：「如果不是當天按，或者不小心提前按，就很難做調整，而且要如何回看前幾個月
+的資料。」v0.1 的結算會把 `last_read_date` 往後推一個 `間隔天數` 並無法撤銷，所以按晚一天、
+按早一天、按錯一次，帳期就跟著歪掉，而歷史只能靠單向累積。
+
+### 帳期模型：歷次抄見日清單
+
+- 一期 = **（上一筆抄見日的隔天）→（這一筆抄見日）**。所有視窗由清單推導，不再由「按下
+  按鈕的瞬間」決定。
+- **未來日期是合法的。** 電費單上的「下次抄表日」直接寫進清單，它就取代 `間隔天數` 的推定值
+  ——這是「回看」與「預先知道帳期」的關鍵。
+- **清單為準，按鈕只是快捷。** 新增 `add_reading`（原樣寫入）、`update_reading`（改日期／
+  度數／金額並重算）、`undo_close_period`（撤銷最後一期）、`period_report`（任意期間回算）。
+- 儲存格式 v1（`periods`）→ v2（`readings`）。載入時自動遷移：v0.1 的 `periods` 與
+  `options.last_read_date` 都會被折進清單，**舊歷史不會消失**。遷移邏輯寫在 `TaipowerLedger`
+  裡，所以可以離線單元測試。
+
+### 防誤按：先提出、再確認
+
+HA 的服務沒有內建確認步驟（`tap_action: confirmation:` 只管 Lovelace），所以狀態機自己管：
+
+- 「結算本期」只**提出**：寫入 `pending_close`、跳 persistent notification、讓
+  `confirm`／`cancel` 兩顆按鈕變可用；**此時完全不寫入**（連 store 都不存）。
+- 15 分鐘內確認才寫入；逾時自動失效，無需清理。
+- 新增三顆按鈕：`close_period`（提出）／`confirm_close`（寫入）／`cancel_close`（丟掉）。
+  後兩顆在沒有待確認結算時是 `unavailable`。
+- 提前結算會被擋下並說明原因（要 `force: true` 才能硬過，並在紀錄上留下 `forced` 標記）。
+
+### 回看歷史：四條路
+
+1. **HA 長期統計**：每期用 `async_add_external_statistics` 寫成
+   `taipower_bill:<戶別>_period_kwh` / `_period_cost`。同一 `start` 是 update 而非 append，
+   所以改寫某期就是整條重寫，不會出現兩條線。
+2. **感測器**：新增 `last_period_kwh` / `last_period_cost` / `last_period_avg_price` /
+   `prev_period_kwh` / `prev_period_cost` / `pending_close_date`（共 17 顆感測器）。
+3. **`period_report` 服務**：任意期間回算明細，不必先結算過。
+4. **卡片**：歷史表可展開全部期別。
+
+### 其他修正
+
+- **手動模式的結算時序**：`close_period` 原本只讀上一次輪詢的快照，所以「剛填完度數就按
+  結算」會以「沒有可用的本期度數」被拒。現在手動模式直接讀 `manual_kwh`，不必等下一次輪詢。
+- 設定問題改用清單語意：`no_readings`（空清單）與 `no_current_reading`（清單全在未來）
+  分開，訊息直接指出怎麼修。
+- 診斷（diagnostics）改為輸出抄見日清單、待確認結算、每期快取與外部統計 id。
+- 測試從 69 項擴充到 **212 項**：帳期算術、提出→確認→撤銷→改寫、recorder 呼叫參數、
+  外部統計 metadata 與列的時間戳、v1→v2 遷移、17 顆感測器的合法性與屬性契約。
+
+### 升級
+
+覆蓋檔案後重啟即可，舊資料會自動遷移。建議升級後到「統計」頁確認兩條
+`taipower_bill:*` 外部統計已經出現（若 v0.1 從未成功寫入過統計，第一次會由背景的
+`async_prepare` 補寫）。
+
 ## 0.1.2 — 2026-10-14
 
 修掉三個「設定明明是對的，數字卻不對」的真實錯誤。

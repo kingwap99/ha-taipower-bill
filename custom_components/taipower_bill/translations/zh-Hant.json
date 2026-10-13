@@ -3,23 +3,23 @@
     "step": {
       "user": {
         "title": "台電電費追蹤",
-        "description": "一戶一個電表，請填電費單上的「上期抄見日期」。",
+        "description": "一戶一個電表，請填電費單上的「起始抄見日（第一次設定用）」。之後的抄見日都用清單維護（結算按鈕或服務），這個值只在第一次建立清單時使用。",
         "data": {
           "label": "戶別名稱",
           "source_entities": "用電量來源（kWh 感測器，可複選）",
           "source_mode": "用量取得方式",
-          "last_read_date": "上期抄見日期",
+          "last_read_date": "起始抄見日（第一次設定用）",
           "cycle_days": "抄表間隔天數"
         }
       },
       "reconfigure": {
         "title": "重新設定",
-        "description": "抄見日填錯（例如「結算本期」被多按幾次）會讓本期視窗跑到未來，所有數值都會變空。改成電費單上的真實日期即可；若歷史已經有錯誤的期別，可勾選下方選項一併清除。",
+        "description": "抄見日清單是唯一依據，填錯的話可以用服務 set_last_read_date／update_reading 修正，或在這裡重填起始日並勾選下方選項一併清除歷史。起始日填錯（例如「結算本期」被多按幾次）會讓本期視窗跑到未來，所有數值都會變空。",
         "data": {
           "label": "戶別名稱",
           "source_entities": "用電量來源（kWh 感測器，可複選）",
           "source_mode": "用量取得方式",
-          "last_read_date": "上期抄見日期",
+          "last_read_date": "起始抄見日（第一次設定用）",
           "cycle_days": "抄表間隔天數",
           "reset_history": "同時清除已結算歷史"
         }
@@ -77,14 +77,22 @@
       "days_remaining": { "name": "距下次抄表" },
       "next_read_date": { "name": "下次抄表日（推定）" },
       "bill_variance": { "name": "推定與實際差額" },
-      "closed_periods": { "name": "已結算期數" }
+      "closed_periods": { "name": "已結算期數" },
+      "last_period_kwh": { "name": "上一期用電量" },
+      "last_period_cost": { "name": "上一期電費" },
+      "last_period_avg_price": { "name": "上一期每度均價" },
+      "prev_period_kwh": { "name": "上上期用電量" },
+      "prev_period_cost": { "name": "上上期電費" },
+      "pending_close_date": { "name": "待確認的抄見日" }
     },
     "number": {
       "manual_period_kwh": { "name": "本期度數（手動）" },
       "actual_bill": { "name": "實際電費金額" }
     },
     "button": {
-      "close_period": { "name": "結算本期" }
+      "close_period": { "name": "結算本期" },
+      "confirm_close": { "name": "確認結算" },
+      "cancel_close": { "name": "取消結算" }
     }
   }
 }

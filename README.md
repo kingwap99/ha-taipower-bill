@@ -7,6 +7,12 @@ Home Assistant 自訂整合。把家中電表／能源監測（例如 Emporia Vu
 適用電價類別：**表燈 非時間電價**（一般住家）。支援多戶共用一個 HA，一戶一條設定即可
 （例如兩戶共用一個電箱、各有自己的電表或 CT）。
 
+> **v0.2.0 的帳期模型：一份「歷次抄見日」清單。**
+> 一期的定義是 **（上一筆抄見日的隔天）→（這一筆抄見日）**。清單是唯一的真相來源，
+> 所有視窗、歷史、統計都由它推導；按下按鈕只是「把今天這個抄見日寫進清單」的快捷。
+> 因此**不是當天按、提前按、按錯、要改金額、要回看前幾個月**都可以事後調整，
+> 而且可以重算。
+
 ---
 
 ## 它跟現成的整合差在哪
@@ -128,8 +134,8 @@ URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 
 ## 產生出來的 entity
 
-每戶會生出 11 個感測器與 2 個控制項（`<base>` 是 HA 實際指派的 entity ID 前綴，中文裝置名
-會被轉寫，**請在整合的「實體」頁複製實際 ID**）：
+每戶會生出 **17 個感測器、3 個按鈕、2 個 number**（`<base>` 是 HA 實際指派的 entity ID 前綴，
+中文裝置名會被轉寫，**請在整合的「實體」頁複製實際 ID**）：
 
 | Sensor | 意義 |
 |---|---|
@@ -140,25 +146,45 @@ URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 | `<base>_avg_price_per_kwh` | 當期每度平均電價（分租對帳直接用這個） |
 | `<base>_marginal_price_per_kwh` | 下一度會落入的費率 |
 | `<base>_days_remaining` / `<base>_next_read_date` | 距下次抄表天數／下次抄表日 |
-| `<base>_bill_variance` | 上次結算時「推定 vs 實際帳單」的差額 |
+| `<base>_bill_variance` | 上期結算時「推定 vs 實際帳單」的差額 |
 | `<base>_closed_periods` | 已結算期數，歷史清單在它的 `history` 屬性 |
+| `<base>_last_period_kwh` / `_last_period_cost` / `_last_period_avg_price` | **上一期**的度數／金額／平均電價 |
+| `<base>_prev_period_kwh` / `_prev_period_cost` | **上上期**的度數／金額 |
+| `<base>_pending_close_date` | 有待確認的結算時，那個待寫入的抄見日 |
 
 控制項：
 
 - `number.<base>_manual_period_kwh` — 手動模式填本期度數
-- `number.<base>_actual_bill` — 填實際帳單金額（對帳用）
-- `button.<base>_close_period` — **收到電費單時按下去**：結算本期寫入歷史，並把抄見日
-  自動推進 `間隔天數`，下一期立刻開始計
+- `number.<base>_actual_bill` — 填實際帳單金額（對帳用，結算時會被寫進那一期）
+- `button.<base>_close_period` — **提出**一次結算（只提出，**不寫入**）
+- `button.<base>_confirm_close` — 確認寫入。**沒有待確認的結算時是 `unavailable`**
+- `button.<base>_cancel_close` — 丟掉這次的結算（本來就沒寫入任何東西）
 
 `_period_kwh` 與 `_period_cost` 宣告 `state_class: total` 並附上 `last_reset`＝本期起算日，
 所以可以直接餵給能源面板的長期統計，結算時不會被記成一次巨大的負向變化。
 
+### 結算是「先提出、再確認」
+
+HA 的服務沒有內建的確認步驟（只有 Lovelace 卡片的 `tap_action: confirmation:`，對自動化
+無效），所以防誤按放在狀態機裡：
+
+1. 按「結算本期」→ 只產生一筆**待確認**的結算：感測器屬性出現 `pending_close`、跳出一個
+   persistent notification、`confirm`／`cancel` 兩顆按鈕變可用。**此時什麼都沒寫入。**
+2. 15 分鐘內按「確認結算」（或呼叫 `taipower_bill.confirm_close`）才真的寫入。
+3. 逾時就自動失效，不需要清理；按「取消結算」也可以直接丟掉。
+
+真的按錯了還有三層救援：撤銷最後一期、改寫某一筆的日期／金額、重算已結算期別（見「服務」）。
+
 ### 屬性
 
 `usage_source` 說明度數是怎麼來的：`statistics`（recorder 長期統計）、`live-delta`（退路）、
-`manual`（手動）、`period-not-started`（本期還沒開始）或 `none`。另外
-`stats_coverage_start`／`stats_last_day` 顯示統計涵蓋範圍，`stats_error` 只在統計讀取失敗時
-出現並寫明原因，`config_issues`／`config_warning` 會指出設定上的問題。
+`manual`（手動）、`bill-kwh`（用電費單上的度數補算歷史期）、`period-not-started`（本期還沒開始）
+或 `none`。另外 `stats_coverage_start`／`stats_last_day` 顯示統計涵蓋範圍，`stats_error` 只在
+統計讀取失敗時出現並寫明原因，`config_issues`／`config_warning` 會指出設定上的問題。
+
+每個感測器都帶同一組屬性：`readings`（抄見日清單）、`history`（已結算期別）、`pending_close`、
+`period_start`／`period_end`／`next_read_date`／`suggested_read_date`、`days_*`，
+以及當期的分段明細（`tiers`／`segments`）。卡片就是讀這一包。
 
 ---
 
@@ -175,7 +201,8 @@ households:
 ```
 
 卡片會依 `_period_kwh` 的後綴自動推導同一戶的其他 entity，所以只要指向 `period_kwh` 那一個。
-內容包含當期進度條、跨季分攤說明、六段累進明細、以及近 8 期的歷史表。
+內容包含當期進度條、跨季分攤說明、六段累進明細、歷史表（**可展開看全部期別**），
+以及有待確認結算時的「確認寫入／取消」按鈕。
 
 ---
 
@@ -183,11 +210,56 @@ households:
 
 | 服務 | 用途 |
 |---|---|
-| `taipower_bill.close_period` | 結算本期寫入歷史。`force: true` 才允許在到期前提前結算 |
-| `taipower_bill.set_last_read_date` | 覆蓋上期抄見日（未來日期會被拒絕），可同時清空歷史 |
-| `taipower_bill.reset_ledger` | 只清歷史期別，不動設定 |
+| `taipower_bill.close_period` | **提出**一次結算（`confirm: true` 則直接寫入）。到期前要 `force: true` |
+| `taipower_bill.confirm_close` | 把待確認的結算寫入清單 |
+| `taipower_bill.cancel_close` | 丟掉待確認的結算 |
+| `taipower_bill.add_reading` | 直接寫入一個抄見日（**未來日期可以**，就是電費單上的「下次抄表日」） |
+| `taipower_bill.undo_close_period` | 撤銷最後一期（或指定 `date`），那一期就回到「本期」 |
+| `taipower_bill.update_reading` | 改寫已記錄的一筆：搬日期、改度數／金額、清金額 |
+| `taipower_bill.period_report` | **任意期間回算明細**（`start`／`end`，或 `date` 指定某一期，`all: true` 全部） |
+| `taipower_bill.set_last_read_date` | 覆蓋起始抄見日（未來日期會被拒絕），可同時清空歷史 |
+| `taipower_bill.reset_ledger` | 清掉抄見日清單（並移除已發佈的長期統計） |
 
-三個服務都可用 `target:` 指定裝置或實體，回傳值放在 `response_variable`。
+九個服務都可用 `target:` 指定裝置或實體，回傳值放在 `response_variable`。
+
+幾個常見情境：
+
+```yaml
+# 1) 電費單上的下次抄表日是未來日期 -> 直接寫進去，帳期立刻以它為準
+service: taipower_bill.add_reading
+target: { entity_id: sensor.taipower_b_period_kwh }
+data: { date: "2026-11-20" }
+
+# 2) 三天前抄的表，今天才有空按 -> 提出結算時指定那一天（按鈕預設也會帶入推定抄見日）
+service: taipower_bill.close_period
+target: { entity_id: sensor.taipower_b_period_kwh }
+data: { read_date: "2026-11-06" }
+
+# 3) 按錯了 -> 撤銷最後一期
+service: taipower_bill.undo_close_period
+target: { entity_id: sensor.taipower_b_period_kwh }
+
+# 4) 帳單金額來了 -> 補寫進那一期，並重算
+service: taipower_bill.update_reading
+target: { entity_id: sensor.taipower_b_period_kwh }
+data: { date: "2026-11-06", actual_bill: 3120 }
+
+# 5) 回看 6 月的明細
+service: taipower_bill.period_report
+target: { entity_id: sensor.taipower_b_period_kwh }
+data: { start: "2026-06-01", end: "2026-06-30" }
+response_variable: june
+```
+
+### 回看歷史的四條路
+
+1. **HA 長期統計**：每一期都會用 `async_add_external_statistics` 寫入
+   `taipower_bill:<戶別>_period_kwh` / `_period_cost` 兩條外部統計，所以在
+   「統計」頁或能源面板就看得到歷期；改寫某期後會**整條重寫**（外部統計在同一時間戳是
+   update，不是 append，所以不會變成兩條）。
+2. **感測器**：`last_period_*`／`prev_period_*` 直接給上一期、上上期。
+3. **`period_report` 服務**：任意期間回算明細（不必先結算過）。
+4. **卡片**：歷史表可展開全部。
 
 ---
 
@@ -195,29 +267,39 @@ households:
 
 ### 數值幾乎都是空的／`days_elapsed` 是 0
 
-**「上期抄見日」是未來日期。** 它一旦跑到未來，本期視窗就成了 `start > end`，所有數值都
-無從計算（`days_elapsed=0`、`距下次抄表` 變成好幾百天）。
+看屬性的 `config_issues`，它會直接告訴你哪一種：
 
-最常見的成因是 **「結算本期」被按了太多次** —— 每按一次就把抄見日往後推一個
-`間隔天數`（60 天），按十次就是 600 天。
+- **`no_readings`** — 抄見日清單是空的。本期沒有任何起算點，全部數值都無從計算。
+  按「結算本期」或呼叫 `add_reading` 寫入第一筆即可。
+- **`no_current_reading`** — 清單裡的抄見日**全都還在未來**。這通常是誤把「下次抄表日」
+  當成「上期抄見日」填進去了。`config_warning` 會把最早的那一筆秀出來。
+- **`last_read_stale`** — 最後一筆已過的抄見日是兩個週期以前的事，提醒你該補新的了
+  （如果你只是還沒收到電費單，忽略即可）。
 
-三種修法任選一種：
+修法（v0.2 之後都不必砍掉重建）：
 
-1. **UI**：整合 → 該 entry → `⋮` → **重新設定** → 把「上期抄見日期」改成電費單上的真實
-   日期，並勾選「同時清除已結算歷史」（清掉那些憑空生出來的期別）→ 送出。
-   填未來日期會被直接擋下來。
-2. **服務**（可自動化）：
-   ```yaml
-   service: taipower_bill.set_last_read_date
-   target:
-     entity_id: sensor.taipower_a_period_kwh
-   data:
-     date: "2026-09-07"          # 電費單上的「上期抄見日期」
-     reset_history: true
-   ```
-3. **砍掉重建**：刪除這條 entry 再重新新增（新 entry_id 等於新的 ledger 檔，歷史自然清空）。
+```yaml
+# 把某一筆的日期直接改對（例如本來填成未來）
+service: taipower_bill.update_reading
+target: { entity_id: sensor.taipower_a_period_kwh }
+data: { date: "2027-01-05", new_date: "2026-09-07" }
 
-修完之後 `config_issues` 會變空、`config_warning` 消失，數值立刻回來。
+# 或整份清單重新開始（連已發佈的長期統計一起清掉）
+service: taipower_bill.reset_ledger
+target: { entity_id: sensor.taipower_a_period_kwh }
+```
+
+UI 也可以：整合 → 該 entry → `⋮` → **重新設定** → 改「上期抄見日期」（填未來會被擋下）。
+
+### 按鈕按了卻說「等於提前結算」
+
+按鈕預設會帶入 **推定抄見日**（上一筆抄見日 + `間隔天數`）。如果電費單上的抄見日比推定值
+早（或你想補記錄一個還沒到期的日期），兩種做法：
+
+- 呼叫 `close_period` 時帶 `read_date` 指定那天，或
+- 帶 `force: true`。
+
+兩者都會在結算紀錄上留下 `forced` 標記，之後在歷史裡看得出來。
 
 ### 度數明顯偏低、`avg_price_per_kwh` 大得離譜
 
@@ -226,6 +308,7 @@ households:
 - **`live-delta`** — 統計路徑失敗，退回讀即時 state 的差值，度數會嚴重低估。
   屬性 `stats_error` 會寫明失敗原因（來源沒有長期統計、資料庫忙碌…）。
 - **`period-not-started`** — 見上一節，抄見日在未來。
+- **`bill-kwh`** — 那個歷史期別在長期統計裡沒有資料，改用電費單上的度數補算（會註明）。
 - **`none`** — 來源 entity 的 state 讀不到（entity 名稱改了？整合沒載入？）。
 
 ### Log 出現 state class 警告
@@ -242,7 +325,7 @@ HA 的 `DEVICE_CLASS_STATE_CLASSES` 規定 `energy` 只能用 `total`／`total_i
 
 ```bash
 python3 -I tests/test_billing.py       # 計費引擎＋設定驗證（16 項）
-python3 -I tests/test_coordinator.py   # 視窗／防呆／recorder 呼叫／state class（69 項）
+python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外部統計／感測器（212 項）
 ```
 
 `test_coordinator.py` 用一組最小的 HA stub 把 `coordinator.py` 真的跑起來，並且：
@@ -250,10 +333,15 @@ python3 -I tests/test_coordinator.py   # 視窗／防呆／recorder 呼叫／sta
 - **直接斷言傳進 recorder 的每個參數** —— 一次查全部來源、`period="day"`、
   `types={"change","sum"}`、`start_time`／`end_time` 就是視窗頭尾。這是抓出
   `end_time + 1 天` 這個 off-by-one 的方法。
-- 驗證 `change` 缺漏時退回 `sum[-1]-sum[0]`、統計列的 `start` 是毫秒或秒都能解析、
-  統計失敗會寫進 `stats_error` 且恢復後自動清掉。
-- 照抄 HA 2026.10.1 `DEVICE_CLASS_STATE_CLASSES` 的規則，逐一檢查 11 個感測器的
-  `(device_class, state_class)` 配對是否合法。
+- **帳期算術**：抄見日清單 → 視窗、`days_elapsed`、未來的「下次抄表日」如何取代
+  `間隔天數` 推定值、按晚三天時結算仍落在原本的抄見日。
+- **結算流程**：提出時**什麼都不能寫入**（連 store 都不准存）、確認才寫、逾時失效、
+  取消、撤銷、改寫／重算、重複日期的拒絕。
+- **外部統計**：metadata 的 `mean_type`／`unit_class`／`statistic_id`、列的 `start` 必須是
+  tz-aware 且落在整點、`sum` 為累積值、結束日在今天的視窗不得發佈。
+- 照抄 HA 2026.10.1 `DEVICE_CLASS_STATE_CLASSES` 的規則，逐一檢查 17 個感測器的
+  `(device_class, state_class)` 配對是否合法，並實例化每一顆確認 `last_reset` 只出現在
+  `total` 感測器上、屬性包與卡片契約一致。
 
 ---
 
@@ -269,8 +357,11 @@ python3 -I tests/test_coordinator.py   # 視窗／防呆／recorder 呼叫／sta
 - 若 `period_start` 早於來源 entity 的統計起點，早於 `stats_coverage_start` 的度數不會被
   計入（卡片也會顯示）。今天那一列的統計還在累加中。
 - `live-delta` 這條退路在來源歸零時會重取基準，會損失那一天的量；統計模式沒這個問題。
+- **待確認的結算只存在記憶體裡**：HA 重啟就消失（反正它還沒寫入任何東西，重按一次即可）。
+- 每戶的長期統計 id 由 `unique_id` 推導（`taipower_bill:<戶別>_period_kwh`）。改戶別名稱不會
+  變動 id，但**刪掉 entry 再重建**會換 id，舊的那兩條統計要自己清。
 
-### 給開發者：HA recorder 統計 API 的四個坑
+### 給開發者：HA recorder 統計 API 的坑
 
 以下對照 Home Assistant 2026.10.1 原始碼驗證過，改這條路之前請先讀：
 
@@ -284,6 +375,15 @@ python3 -I tests/test_coordinator.py   # 視窗／防呆／recorder 呼叫／sta
 3. 每日列的 `sum` 是**當日結束**時的累積值，所以要加總每一列的 `change`；
    用 `sum[-1] - sum[0]` 會漏掉第一天。
 4. 統計列的 `start` 在 websocket 層是**毫秒**、在 in-process 呼叫是**秒**，兩者都要能吃。
+5. 寫入外部統計的 `async_add_external_statistics(hass, metadata, statistics)` 是
+   **`@callback`，不是協程**（呼叫時不要 `await`），它只是把 import job 塞進佇列。
+   metadata 必須有 `has_mean`／`mean_type`（少了今天只跳 deprecation，**2026.11 會壞**）、
+   `has_sum`、`source`、`statistic_id`、`unit_class`（要是已知的換算 key，kWh 用 `"energy"`；
+   TWD 沒有對應的換算器，必須給 `None`，給 `"monetary"` 會被拒）。
+6. 列的 `start` 必須是 **tz-aware 且落在整點**（recorder 在轉 UTC 前會檢查
+   `minute == second == microsecond == 0`）。用 `dt_util.start_of_local_day(end + 1 天)`
+   就是當地午夜，剛好符合。
+7. 重送同一個 `start` 是 **update 而非 append**，所以「改寫已結算期別」可以直接整條重寫。
 
 ---
 

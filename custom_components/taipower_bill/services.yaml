@@ -1,21 +1,20 @@
 close_period:
   name: 結算本期
-  description: 把本期寫入歷史並把上期抄見日推進一個週期。預設只在本期已到推定抄見日時才允許。
+  description: "提出本期的結算（待確認）。預設只提出，不寫入；要真正寫入請再呼叫 confirm_close，或在同一次呼叫帶 confirm: true。"
   target:
     entity:
       integration: taipower_bill
       domain: sensor
   fields:
-    force:
-      name: 強制結算
-      description: 設 true 可跳過「尚未到抄見日」的檢查（提前結算時使用）。
+    read_date:
+      name: 實際抄見日
+      description: 這期的實際抄見日。不填會用建議值（推定抄見日已過就用它，否則用今天）。改這個值就是「不是當天按」的正解：晚按不會把帳期往後推。
       required: false
-      default: false
       selector:
-        boolean:
+        date:
     actual_kwh:
       name: 實際抄見度數
-      description: 不填則用目前量測到的本期度數。
+      description: 電費單上的本期度數。不填就用 HA 統計算出來的值。
       required: false
       selector:
         number:
@@ -26,7 +25,7 @@ close_period:
           unit_of_measurement: kWh
     actual_bill:
       name: 實際電費金額
-      description: 電費單上的應繳金額，填了會一起寫進歷史做對帳。
+      description: 電費單上的應繳金額，寫進歷史做對帳用。
       required: false
       selector:
         number:
@@ -35,10 +34,191 @@ close_period:
           step: 1
           mode: box
           unit_of_measurement: TWD
+    force:
+      name: 強制結算
+      description: 跳過「還沒到抄見日」的檢查（提前結算時使用）。
+      required: false
+      default: false
+      selector:
+        boolean:
+    confirm:
+      name: 直接寫入
+      description: true = 直接寫入，不經過待確認步驟（給自動化用）。
+      required: false
+      default: false
+      selector:
+        boolean:
+
+confirm_close:
+  name: 確認寫入待結算期別
+  description: 把上一筆 close_period 提出的待確認結算寫入歷史。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+
+cancel_close:
+  name: 取消待確認的結算
+  description: 丟掉待確認的結算，不寫入任何東西。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+
+add_reading:
+  name: 新增抄見日
+  description: 直接把一個抄見日寫進清單（不經確認步驟）。這份清單是帳期唯一的依據；下次抄表日也可以先寫進來（未來日期沒問題，會取代用週期天數的推估值）。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    date:
+      name: 抄見日
+      required: true
+      selector:
+        date:
+    actual_kwh:
+      name: 實際度數
+      description: 電費單上這個帳期的度數（選填，會用來對帳）。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          step: 0.1
+          mode: box
+          unit_of_measurement: kWh
+    actual_bill:
+      name: 實際金額
+      description: 電費單上這個帳期的應繳金額（選填）。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000000
+          step: 1
+          mode: box
+          unit_of_measurement: TWD
+    force:
+      name: 覆蓋既有的同一天
+      required: false
+      default: false
+      selector:
+        boolean:
+    note:
+      name: 備註
+      description: 記在這一筆上的備註（選填）。
+      required: false
+      selector:
+        text:
+
+undo_close_period:
+  name: 撤銷最後一期結算
+  description: 把一筆抄見日從清單移除（預設最後一筆）並重算受影響的帳期，用來修掉誤按。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    date:
+      name: 要撤銷的抄見日
+      description: 要撤銷的抄見日。不填就是最後一筆。
+      required: false
+      selector:
+        date:
+
+update_reading:
+  name: 改寫／重算抄見日
+  description: 修改已經記下的抄見日（改日期、改電費單上的度數或金額），或請 HA 重新用長期統計回算那一期。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    date:
+      name: 要修改的抄見日
+      description: 要修改的那一筆抄見日。
+      required: true
+      selector:
+        date:
+    new_date:
+      name: 新的抄見日
+      description: 改成這個日期（例如電費單上的抄見日跟當初填的不一樣）。
+      required: false
+      selector:
+        date:
+    actual_kwh:
+      name: 實際抄見度數
+      description: 改成電費單上的值。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          step: 0.1
+          mode: box
+          unit_of_measurement: kWh
+    actual_bill:
+      name: 實際電費金額
+      description: 改成電費單上的值。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000000
+          step: 1
+          mode: box
+          unit_of_measurement: TWD
+    recompute:
+      name: 重新回算
+      description: 用 HA 長期統計重新回算這一期的度數與電費。
+      required: false
+      default: false
+      selector:
+        boolean:
+    clear_amounts:
+      name: 清掉實際度數與金額
+      description: 清掉這筆的實際度數與金額（只用統計回算）。
+      required: false
+      default: false
+      selector:
+        boolean:
+
+period_report:
+  name: 查詢期間明細
+  description: 回算並回傳指定期間的完整明細（級距、季節拆帳、各項費用）。可用 date 指定某一期，或用 start/end 指定任意區間。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    date:
+      name: 指定日期
+      required: false
+      selector:
+        date:
+    start:
+      name: 起始日期
+      required: false
+      selector:
+        date:
+    end:
+      name: 結束日期
+      required: false
+      selector:
+        date:
+    all:
+      name: 所有已記錄帳期
+      description: 回傳所有已記錄的帳期。
+      required: false
+      default: false
+      selector:
+        boolean:
 
 set_last_read_date:
   name: 修正上期抄見日
-  description: 用電費單上的「上期抄見日期」覆蓋目前設定。日期必須是過去、且不超過 400 天前。
+  description: 把清單裡最後一筆已過的抄見日改成電費單上的日期（用來修正一開始填錯的錨點）。
   target:
     entity:
       integration: taipower_bill
@@ -50,23 +230,30 @@ set_last_read_date:
       selector:
         date:
     reset_history:
-      name: 同時清除已結算歷史
-      description: 抄見日填錯過導致歷史有問題時，一併清掉。
+      name: 同時清除其他抄見日與歷史期別
+      description: 同時清掉其他抄見日與歷史期別。
       required: false
       default: false
       selector:
         boolean:
 
 reset_ledger:
-  name: 清除已結算歷史
-  description: 清空這戶的歷史期別（不影響設定）。
+  name: 清除抄見日與歷史
+  description: 清空這戶記錄下來的抄見日清單與帳期歷史（不影響設定）。
   target:
     entity:
       integration: taipower_bill
       domain: sensor
   fields:
+    clear_readings:
+      name: 清除抄見日清單
+      required: false
+      default: true
+      selector:
+        boolean:
     clear_baseline:
-      name: 一併重置 live-delta 基準
+      name: 一併重置即時差值的基準
+      description: 一併重置即時差值的基準。
       required: false
       default: true
       selector:
