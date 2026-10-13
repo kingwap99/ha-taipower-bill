@@ -1,0 +1,27 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Both suites are pure Python and stub out Home Assistant, so there is
+      # nothing to install.  -I keeps the runner's site-packages out of it.
+      - name: Billing engine + config validation
+        run: python3 -I tests/test_billing.py
+
+      - name: Coordinator (window / guards / recorder call shape / state classes)
+        run: python3 -I tests/test_coordinator.py
+
+      - name: Byte-compile every module
+        run: python3 -m compileall -q custom_components/taipower_bill
