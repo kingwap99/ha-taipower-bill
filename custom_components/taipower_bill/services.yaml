@@ -1,0 +1,73 @@
+close_period:
+  name: 結算本期
+  description: 把本期寫入歷史並把上期抄見日推進一個週期。預設只在本期已到推定抄見日時才允許。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    force:
+      name: 強制結算
+      description: 設 true 可跳過「尚未到抄見日」的檢查（提前結算時使用）。
+      required: false
+      default: false
+      selector:
+        boolean:
+    actual_kwh:
+      name: 實際抄見度數
+      description: 不填則用目前量測到的本期度數。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1000000
+          step: 0.1
+          mode: box
+          unit_of_measurement: kWh
+    actual_bill:
+      name: 實際電費金額
+      description: 電費單上的應繳金額，填了會一起寫進歷史做對帳。
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 10000000
+          step: 1
+          mode: box
+          unit_of_measurement: TWD
+
+set_last_read_date:
+  name: 修正上期抄見日
+  description: 用電費單上的「上期抄見日期」覆蓋目前設定。日期必須是過去、且不超過 400 天前。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    date:
+      name: 上期抄見日期
+      required: true
+      selector:
+        date:
+    reset_history:
+      name: 同時清除已結算歷史
+      description: 抄見日填錯過導致歷史有問題時，一併清掉。
+      required: false
+      default: false
+      selector:
+        boolean:
+
+reset_ledger:
+  name: 清除已結算歷史
+  description: 清空這戶的歷史期別（不影響設定）。
+  target:
+    entity:
+      integration: taipower_bill
+      domain: sensor
+  fields:
+    clear_baseline:
+      name: 一併重置 live-delta 基準
+      required: false
+      default: true
+      selector:
+        boolean:

@@ -1,0 +1,13 @@
+{
+  "domain": "taipower_bill",
+  "name": "Taipower Bill (台電電費)",
+  "codeowners": ["@kingwap99"],
+  "config_flow": true,
+  "documentation": "https://github.com/kingwap99/ha-taipower-bill",
+  "issue_tracker": "https://github.com/kingwap99/ha-taipower-bill/issues",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "after_dependencies": ["recorder"],
+  "requirements": [],
+  "version": "0.1.2"
+}

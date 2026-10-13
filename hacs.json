@@ -1,0 +1,6 @@
+{
+  "name": "Taipower Bill (台電電費)",
+  "content_in_root": false,
+  "render_readme": true,
+  "homeassistant": "2026.10.0"
+}

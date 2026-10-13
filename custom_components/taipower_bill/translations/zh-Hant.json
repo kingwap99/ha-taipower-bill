@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "台電電費追蹤",
+        "description": "一戶一個電表，請填電費單上的「上期抄見日期」。",
+        "data": {
+          "label": "戶別名稱",
+          "source_entities": "用電量來源（kWh 感測器，可複選）",
+          "source_mode": "用量取得方式",
+          "last_read_date": "上期抄見日期",
+          "cycle_days": "抄表間隔天數"
+        }
+      },
+      "reconfigure": {
+        "title": "重新設定",
+        "description": "抄見日填錯（例如「結算本期」被多按幾次）會讓本期視窗跑到未來，所有數值都會變空。改成電費單上的真實日期即可；若歷史已經有錯誤的期別，可勾選下方選項一併清除。",
+        "data": {
+          "label": "戶別名稱",
+          "source_entities": "用電量來源（kWh 感測器，可複選）",
+          "source_mode": "用量取得方式",
+          "last_read_date": "上期抄見日期",
+          "cycle_days": "抄表間隔天數",
+          "reset_history": "同時清除已結算歷史"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "這戶已經設定過了",
+      "reconfigure_successful": "設定已更新"
+    },
+    "error": {
+      "label_required": "請輸入戶別名稱",
+      "source_required": "統計模式下必須選至少一個 kWh 來源",
+      "last_read_invalid": "日期格式無法辨識",
+      "last_read_in_future": "上期抄見日期不能是未來日期，請填電費單上那個已經過去的抄見日",
+      "last_read_too_old": "上期抄見日期超過 400 天前，請確認是不是填錯年份",
+      "cycle_days_too_short": "抄表間隔至少要 20 天（雙月帳單通常是 60 天）",
+      "cycle_days_invalid": "抄表間隔必須是數字"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "費率與附加費",
+        "description": "請照電費單核對。附加費（再生能源球金、空污費）與營業稅預設為 0，請依電費單實際數值填入。",
+        "data": {
+          "summer_start": "夏月起始（MM-DD）",
+          "summer_end": "夏月結束（MM-DD）",
+          "tariff_revision": "費率版本",
+          "surcharge_per_kwh": "每度附加費（球金＋空污費）",
+          "fixed_fees_per_period": "每期固定費用",
+          "business_tax_rate": "營業稅率（0.05 = 5%）",
+          "min_charge_per_month": "每月最低電費",
+          "period_months": "一期月數（雙月＝2）"
+        }
+      }
+    }
+  },
+  "selector": {
+    "source_mode": {
+      "options": {
+        "statistics": "HA 歷史統計（可回溯）",
+        "manual": "手動輸入電費單度數"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "period_kwh": { "name": "本期用電量" },
+      "period_cost": { "name": "本期電費（推定）" },
+      "avg_daily_kwh": { "name": "平均每日用電" },
+      "projected_period_kwh": { "name": "本期推估總度數" },
+      "projected_period_cost": { "name": "本期推估總電費" },
+      "avg_price_per_kwh": { "name": "當期每度平均電價" },
+      "marginal_price_per_kwh": { "name": "下一度適用費率" },
+      "days_remaining": { "name": "距下次抄表" },
+      "next_read_date": { "name": "下次抄表日（推定）" },
+      "bill_variance": { "name": "推定與實際差額" },
+      "closed_periods": { "name": "已結算期數" }
+    },
+    "number": {
+      "manual_period_kwh": { "name": "本期度數（手動）" },
+      "actual_bill": { "name": "實際電費金額" }
+    },
+    "button": {
+      "close_period": { "name": "結算本期" }
+    }
+  }
+}

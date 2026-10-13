@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Taipower bill tracking",
+        "description": "One entry per meter. Enter the previous meter-read date printed on your bill.",
+        "data": {
+          "label": "Household label",
+          "source_entities": "Usage source (kWh sensors, multiple allowed)",
+          "source_mode": "Usage source mode",
+          "last_read_date": "Previous meter-read date",
+          "cycle_days": "Days between meter reads"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure",
+        "description": "A wrong meter-read date (e.g. the Close period button pressed a few extra times) pushes the period window into the future and blanks every value. Set the real date from your bill; tick the box below to also drop the bad history rows.",
+        "data": {
+          "label": "Household label",
+          "source_entities": "Usage source (kWh sensors, multiple allowed)",
+          "source_mode": "Usage source mode",
+          "last_read_date": "Previous meter-read date",
+          "cycle_days": "Days between meter reads",
+          "reset_history": "Also clear closed-period history"
+        }
+      }
+    },
+    "abort": {
+      "already_configured": "This household is already configured",
+      "reconfigure_successful": "Configuration updated"
+    },
+    "error": {
+      "label_required": "A household label is required",
+      "source_required": "Pick at least one kWh source in statistics mode",
+      "last_read_invalid": "That date could not be parsed",
+      "last_read_in_future": "The previous meter-read date cannot be in the future — use the past date printed on your bill",
+      "last_read_too_old": "The previous meter-read date is more than 400 days ago — check the year",
+      "cycle_days_too_short": "The read interval must be at least 20 days (bimonthly bills are usually 60)",
+      "cycle_days_invalid": "The read interval must be a number"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Tariff and surcharges",
+        "description": "Verify against a real bill. Surcharges (renewable energy fee, air pollution fee) and business tax default to 0.",
+        "data": {
+          "summer_start": "Summer starts (MM-DD)",
+          "summer_end": "Summer ends (MM-DD)",
+          "tariff_revision": "Tariff revision",
+          "surcharge_per_kwh": "Per-kWh surcharges",
+          "fixed_fees_per_period": "Fixed fee per period",
+          "business_tax_rate": "Business tax rate (0.05 = 5%)",
+          "min_charge_per_month": "Minimum charge per month",
+          "period_months": "Months per period (bimonthly = 2)"
+        }
+      }
+    }
+  },
+  "selector": {
+    "source_mode": {
+      "options": {
+        "statistics": "Home Assistant statistics (retroactive)",
+        "manual": "Key in the meter reading from the bill"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "period_kwh": { "name": "Current period usage" },
+      "period_cost": { "name": "Current period cost (estimated)" },
+      "avg_daily_kwh": { "name": "Average daily usage" },
+      "projected_period_kwh": { "name": "Projected period usage" },
+      "projected_period_cost": { "name": "Projected period cost" },
+      "avg_price_per_kwh": { "name": "Effective price per kWh" },
+      "marginal_price_per_kwh": { "name": "Marginal price per kWh" },
+      "days_remaining": { "name": "Days until next read" },
+      "next_read_date": { "name": "Next projected read date" },
+      "bill_variance": { "name": "Estimate vs actual variance" },
+      "closed_periods": { "name": "Closed periods" }
+    },
+    "number": {
+      "manual_period_kwh": { "name": "Period usage (manual)" },
+      "actual_bill": { "name": "Actual billed amount" }
+    },
+    "button": {
+      "close_period": { "name": "Close period" }
+    }
+  }
+}
