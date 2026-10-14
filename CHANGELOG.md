@@ -1,5 +1,80 @@
 # Changelog
 
+## 0.2.1 — 2026-10-14
+
+**v0.2.0 裝上去完全不能用** —— 這版把「在真的 Home Assistant 上跑不起來」的四個原因修掉，
+並且補上一套**跑在真的 Home Assistant 2026.10.1 上**的測試，讓這種事不會再發生。
+
+v0.2.0 的離線測試全綠、GitHub Actions 也全綠，卻在真機上一個 entity 都生不出來。原因是
+那些測試把 Home Assistant **stub 掉**了，而 stub 比真貨寬鬆：真貨會擋的呼叫，stub 照收。
+以下四點，每一點都是「stub 可以，真 HA 不行」。
+
+### 1. 設定檔初始化就爆：`Store` 已經沒有遷移參數（真因）
+
+HA 2026.10 的 `Store.__init__` 是
+`Store(hass, version, key, *, minor_version=1, atomic_writes=False, encoder=None, decoder=None)`
+——**沒有任何遷移參數**（舊的 `migrate_func` 已被移除，`async_migrate_func` 則從未存在）。
+v0.2.0 仍傳了 `async_migrate_func=`，於是 `TypeError` 在協調器建構子裡炸開，
+`async_setup_entry` 失敗 —— **整個整合一個 entity 都沒有**。
+
+遷移現在走核心唯一允許的路：在子類別覆寫 `Store._async_migrate_func`（`TaipowerLedgerStore`），
+`Store._async_load_data` 會在版本不同時呼叫它；遷移邏輯本身仍留在模組層函式
+`_async_migrate_store`，所以離線可測。
+
+> 為什麼沒被測到：測試裡的假 `Store.__init__` 收了 `async_migrate_func=None, **kwargs`。
+> 這是**假貨比真貨寬鬆**造成的事故，現在假 `Store` 的簽章與真貨一致，並額外斷言
+> 「未覆寫 `_async_migrate_func` 的 `Store` 會丟 `NotImplementedError`」。
+
+### 2. 九個服務全部呼叫失敗：服務處理函式的參數個數
+
+HA 2026.10 呼叫服務是 `await target(service_call)` —— **恰好一個參數**。v0.2.0 的處理函式
+簽章是 `(hass, call)`，所以每一個服務都死在
+`TypeError: missing 1 required positional argument: 'call'`（`hass` 要從
+`ServiceCall.hass` 拿）。九個服務（`close_period`、`confirm_close`、`cancel_close`、
+`add_reading`、`undo_close_period`、`update_reading`、`period_report`、
+`set_last_read_date`、`reset_ledger`）現在都是 `(call: ServiceCall)`。
+
+### 3. 兩顆日期感測器會讓平台拋錯
+
+HA 2026.10 的 `date` 感測器會對狀態呼叫 `value.isoformat()`，所以 `native_value` 必須回傳
+**真正的 `date` 物件**。v0.2.0 回傳的是已經格式化好的字串，平台於是在
+`'str' object has no attribute 'isoformat'` 上炸掉。現在 `native_value` 回傳 `date`，
+而**屬性**（`extra_state_attributes`）維持 ISO 字串給卡片用 —— 兩者需求不同。
+
+### 4. 清除統計的 API 位置錯了，而且錯得很安靜
+
+`async_clear_statistics` 不是 `recorder.statistics` 的模組層函式（那裡只有阻塞版的
+`clear_statistics`），它是 **`Recorder` 實例上的 `@callback`**：
+`get_instance(hass).async_clear_statistics(ids, *, on_done=None)`。v0.2.0 從模組層匯入，
+`ImportError` 被吞掉、回傳 `False`，於是「清除帳本」永遠留下兩條對不上的外部統計。
+
+### 5. 手動模式結算後度數會消失（新測試抓到的第五個錯）
+
+`async_confirm_close` 只把 `proposal["actual_kwh"]`（電費單上的度數）寫進紀錄，但手動模式
+填的是「本期度數」那個 number 欄位；而 `_write_reading` 一寫完就把 `manual_kwh` 歸零。
+結果：手動模式結算完那期是**空的**，上期／上上期永遠空白，而且 `_statistic_rows` 會跳過
+沒有度數的期別，外部統計一條都寫不出來。現在手動模式會退回使用 `proposal["kwh"]`。
+
+### 測試
+
+- 新增 `tests/ha/`：**24 項測試跑在真的 Home Assistant 2026.10.1 上**（
+  `pytest-homeassistant-custom-component==0.13.372`），涵蓋設定流程（新增／重複戶別擋下／
+  欄位驗證／重新設定／選項）、真的 config entry 設定、entity registry、**活的 recorder
+  資料庫**（讀取與寫入外部統計）、九個服務的完整流程，以及 v1→v2 的 store 遷移。
+  跑法見 README，或 `pip install -r requirements_test_ha.txt && pytest`。
+- 這套測試會自己把 repo 的 `custom_components/taipower_bill` 複製進拋棄式的 HA 設定目錄，
+  **不需要**任何指向 site-packages 的 symlink，也永遠測到工作目錄裡的程式碼。
+- 離線套件（`tests/test_billing.py`、`tests/test_coordinator.py`）從 212 項擴充到 **218 項**，
+  並修掉三處「stub 比真貨寬鬆」的地方：`Store` 的簽章、`Recorder.async_clear_statistics`
+  的位置、以及 `HomeAssistant.loop`。
+- 上面四個缺陷都**逐一重新植入**驗證過：把它們改回壞的版本，新測試確實會紅（真機套件
+  四個全抓到；離線套件抓得到其中三個，服務參數個數那一個只有真機套件看得到）。
+
+### 升級
+
+覆蓋檔案、重啟即可。**如果你裝的是 v0.2.0，它從來沒有真的跑起來過**（不會有任何 entity），
+所以這個升級是從「沒有東西」變成「有東西」；若你仍是 v0.1.x，資料會自動遷移。
+
 ## 0.2.0 — 2026-10-14
 
 把整個帳期模型換掉：**結算不再是一個「事件」，而是一份可以事後修改的清單。**

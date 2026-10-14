@@ -47,6 +47,7 @@ human-readable explanation that the card surfaces at the top.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -99,6 +100,10 @@ STALE_CYCLES = 2
 #: How long a proposed 結算 stays open before it quietly expires.  A pending
 #: proposal writes nothing, so it needs no cleanup beyond being forgotten.
 PENDING_TTL = timedelta(minutes=15)
+#: How long to wait for the recorder to confirm a statistics purge.  Core's own
+#: websocket command allows 10s; a reset may purge two series, so give it a bit
+#: more before reporting a failure.
+CLEAR_STATISTICS_TIMEOUT = 20.0
 
 #: Storage schema version.  v1 stored ``{"periods": [...]}`` (event driven);
 #: v2 stores ``{"readings": [...]}`` (data driven).  The migration itself lives
@@ -159,6 +164,29 @@ async def _async_migrate_store(
     return data if isinstance(data, dict) else {}
 
 
+class TaipowerLedgerStore(Store):
+    """The ledger's storage, with the v1 -> v2 payload migration attached.
+
+    Home Assistant 2026.10 removed the migration keyword from ``Store.__init__``
+    entirely (it used to be ``migrate_func``, and ``async_migrate_func`` never
+    existed): the only hook left is the ``Store._async_migrate_func`` *method*,
+    overridden in a subclass.  Passing the keyword raised ``TypeError`` from
+    inside the coordinator's constructor, so ``async_setup_entry`` failed and the
+    integration produced **no entities at all** -- which is why v0.2.0 was
+    completely unusable on a real instance while the stub-based unit tests (whose
+    fake ``Store`` accepted the keyword) stayed green.
+
+    The migration itself stays in the module-level function above so it can be
+    exercised without a running Home Assistant.
+    """
+
+    async def _async_migrate_func(
+        self, old_major: int, old_minor: int, old_data: dict | None
+    ) -> dict:
+        """Migrate the stored payload; core calls this with 3 positional args."""
+        return await _async_migrate_store(old_major, old_minor, old_data)
+
+
 class TaipowerLedger:
     """Persisted list of actual meter-read dates (歷次抄見日) for one meter.
 
@@ -187,11 +215,10 @@ class TaipowerLedger:
     """
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
-        self._store = Store(
+        self._store = TaipowerLedgerStore(
             hass,
             STORAGE_VERSION,
             f"{STORAGE_PREFIX}.{entry_id}",
-            async_migrate_func=_async_migrate_store,
         )
         self.data: dict[str, Any] = {
             "readings": [],
@@ -1066,9 +1093,21 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         if read_date is None:
             raise HomeAssistantError(f"{self.label}: 待確認的結算缺少有效日期。")
 
+        # The 度數 that was confirmed has to be *stored* with the reading.  In
+        # statistics mode the recorder can recompute any window afterwards, so
+        # ``actual_kwh`` (the paper bill's figure) is all that needs carrying
+        # over -- but in manual mode there is no such source, and
+        # ``_write_reading`` zeroes ``manual_kwh`` the moment it returns.  Without
+        # this the period closes blank: 上期/上上期 stay empty, and
+        # ``_statistic_rows`` skips every period with no kwh, so the external
+        # statistics series would never receive a single row.
+        kwh = proposal.get("actual_kwh")
+        if kwh is None and self.source_mode == SOURCE_MODE_MANUAL:
+            kwh = proposal.get("kwh")
+
         record = await self._write_reading(
             read_date,
-            kwh=proposal.get("actual_kwh"),
+            kwh=kwh,
             bill=proposal.get("actual_bill"),
             forced=bool(proposal.get("force")),
             note="close_period",
@@ -1912,16 +1951,33 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         Without this, wiping the ledger would leave the old 每期用電/每期電費
         series in the statistics dashboard forever, telling a story that no
         longer matches the integration.
+
+        ``async_clear_statistics`` is **not** a module-level helper in
+        ``recorder.statistics`` (it never was, in fact: only the blocking
+        ``clear_statistics`` lives there) -- in HA 2026.10 it is a ``@callback``
+        method on the ``Recorder`` instance, reachable as
+        ``get_instance(hass).async_clear_statistics(ids, on_done=...)``.  The old
+        import silently raised ``ImportError`` and this returned ``False``, so
+        the series was never dropped on a reset.
         """
         try:
-            from homeassistant.components.recorder.statistics import (
-                async_clear_statistics,
-            )
-        except ImportError:
+            from homeassistant.components.recorder import get_instance
+        except ImportError:  # recorder not set up / not loaded
             return False
+
+        loop = self.hass.loop
+        done = asyncio.Event()
+
+        def _on_done() -> None:
+            loop.call_soon_threadsafe(done.set)
+
         kwh_id, cost_id = self.statistic_ids()
         try:
-            async_clear_statistics(self.hass, [kwh_id, cost_id])
+            get_instance(self.hass).async_clear_statistics(
+                [kwh_id, cost_id], on_done=_on_done
+            )
+            async with asyncio.timeout(CLEAR_STATISTICS_TIMEOUT):
+                await done.wait()
         except Exception as err:  # noqa: BLE001 - reported on the sensors
             self._note_stats_write_error(f"清除統計失敗 {type(err).__name__}: {err}")
             return False

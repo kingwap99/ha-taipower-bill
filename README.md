@@ -321,12 +321,33 @@ HA 的 `DEVICE_CLASS_STATE_CLASSES` 規定 `energy` 只能用 `total`／`total_i
 
 ## 測試
 
-兩套測試都是純 Python、不需要安裝 Home Assistant：
+**兩套離線測試**：純 Python、不需要安裝 Home Assistant（需要 Python 3.11+）。
 
 ```bash
 python3 -I tests/test_billing.py       # 計費引擎＋設定驗證（16 項）
-python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外部統計／感測器（212 項）
+python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外部統計／感測器（218 項）
 ```
+
+**一套真機測試**：跑在**真的 Home Assistant 2026.10.1** 上（24 項）。
+
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements_test_ha.txt
+pytest                                 # 等同 pytest tests/ha
+```
+
+`tests/ha/` 會自己把 repo 的 `custom_components/taipower_bill` 複製進一個拋棄式的 HA 設定
+目錄，所以**不需要**任何指向 site-packages 的 symlink，也一定測到工作目錄裡的程式碼。它涵蓋
+設定流程（新增戶別、重複戶別被擋、欄位驗證、重新設定、選項）、真的 config entry 設定、
+entity registry、**活的 recorder 資料庫**（讀統計、寫外部統計、清除統計）、九個服務的完整流程
+（提出→確認→撤銷、`add_reading`／`update_reading`／`period_report`／`set_last_read_date`／
+`reset_ledger`），以及 v1→v2 的 store 遷移與「比程式新的儲存檔不會被覆蓋」。
+
+> v0.2.0 就是死在這一層：離線測試全綠、CI 也全綠，真機上卻一個 entity 都生不出來
+> （四個原因見 CHANGELOG 0.2.1）。根本問題是 **stub 比真貨寬鬆** —— 真 HA 會擋的呼叫，
+> stub 照收。所以現在離線測試的 stub 只鏡射**真的**簽章（`Store` 的建構子、
+> `Recorder.async_clear_statistics` 的位置、`HomeAssistant.loop`），真機那層則由
+> `tests/ha/` 補上。
 
 `test_coordinator.py` 用一組最小的 HA stub 把 `coordinator.py` 真的跑起來，並且：
 
@@ -350,9 +371,9 @@ python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外�
 - **只在 Home Assistant 2026.10.1 上實機驗證過。** 統計路徑依賴 recorder 的
   `statistics_during_period`；若你的 HA 版本較舊而這條路失敗，`stats_error` 會直接告訴你。
   `hacs.json` 的最低版本因此保守地設在 2026.10。
-- **尚未在真實 HA 上驗證**：config entry 的 reconfigure／options 流程、entity registry 的
-  實際掛載。首次載入若有 API 不符，看 Log 的 `taipower_bill` 那幾行即可定位；統計路徑的
-  失敗一定會留下 WARNING，不會無聲無息。
+- **尚未在真實 HA 上驗證**：config entry 的 reconfigure／options 流程（`tests/ha/` 走的是
+  「新增 entry → 載入」那條路）。entity registry 的實際掛載與九個服務都已在 `tests/ha/`
+  用真的 HA 驗證過。首次載入若有 API 不符，看 Log 的 `taipower_bill` 那幾行即可定位。
 - **附加費與營業稅沒有內建預設值**，必須照電費單填。
 - 若 `period_start` 早於來源 entity 的統計起點，早於 `stats_coverage_start` 的度數不會被
   計入（卡片也會顯示）。今天那一列的統計還在累加中。
@@ -361,7 +382,46 @@ python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外�
 - 每戶的長期統計 id 由 `unique_id` 推導（`taipower_bill:<戶別>_period_kwh`）。改戶別名稱不會
   變動 id，但**刪掉 entry 再重建**會換 id，舊的那兩條統計要自己清。
 
-### 給開發者：HA recorder 統計 API 的坑
+### 給開發者：HA 2026.10 的 API 坑
+
+以下每一條都是**對照 Home Assistant 2026.10.1 原始碼或真機**驗證過的，而且都真的讓 v0.2.0
+在真機上陣亡（見 CHANGELOG 0.2.1）。要改這幾條路之前請先讀完。
+
+#### a. 服務處理函式只收一個參數
+
+HA 呼叫服務的方式是 `await target(service_call)` —— **恰好一個位置參數**：
+
+```python
+async def _handle_close_period(call: ServiceCall) -> dict:
+    hass = call.hass          # not a parameter
+```
+
+寫成 `(hass, call)` 會得到 `TypeError: missing 1 required positional argument: 'call'`。
+`ServiceCall.__slots__` 裡有 `context/data/domain/hass/return_response/service`，所以
+`hass` 一律從 `call.hass` 拿；`HassJob` 不會注入它。
+
+#### b. `Store` 沒有遷移參數，遷移要靠覆寫方法
+
+`Store.__init__` 是
+`Store(hass, version, key, *, minor_version=1, atomic_writes=False, encoder=None, decoder=None)`
+——**沒有** `migrate_func`，也從來沒有 `async_migrate_func`。要遷移只能開子類別覆寫
+`Store._async_migrate_func(old_major, old_minor, old_data)`；核心在
+`Store._async_load_data` 裡比對 `version`／`minor_version`，不同才會呼叫它（未覆寫則丟
+`NotImplementedError`），載完會自動 `async_save` 把新版寫回去。
+
+#### c. `date` 感測器的 `native_value` 必須是 `date` 物件
+
+平台會對 state 呼叫 `value.isoformat()`，回傳字串會炸
+（`'str' object has no attribute 'isoformat'`）。**屬性**（`extra_state_attributes`）則相反，
+要給 ISO 字串 —— 卡片讀的是屬性。
+
+#### d. `async_clear_statistics` 在 `Recorder` 實例上，不在模組層
+
+`homeassistant.components.recorder.statistics` 只有**阻塞版**的 `clear_statistics`；非阻塞版是
+`Recorder.async_clear_statistics(statistic_ids, *, on_done=None)`，一個 `@callback`，透過
+`get_instance(hass)` 取得。從模組層匯入會 `ImportError`，若被吞掉就變成「靜默不回傳」。
+
+#### e. recorder 統計 API
 
 以下對照 Home Assistant 2026.10.1 原始碼驗證過，改這條路之前請先讀：
 

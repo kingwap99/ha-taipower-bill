@@ -1,0 +1,13 @@
+# Dependencies for the real-Home-Assistant suite in tests/ha/.
+#
+# It pins the exact Home Assistant release the integration is verified
+# against.  ``pytest-homeassistant-custom-component`` carries the matching
+# ``homeassistant`` and pytest plugins as its own dependencies, so this one
+# line is enough; ``freezegun`` comes with it too and is listed for clarity
+# because the flow tests freeze time explicitly.
+#
+#   python3 -m venv .venv && . .venv/bin/activate
+#   pip install -r requirements_test_ha.txt
+#   pytest
+pytest-homeassistant-custom-component==0.13.372
+freezegun==1.5.5

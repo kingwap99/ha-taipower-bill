@@ -19,10 +19,20 @@ What these tests DO cover:
 * sensor legality: every (device_class, state_class) pair, ``last_reset`` only
   on the ``total`` sensors, and the attribute contract the Lovelace card reads.
 
-What these do NOT cover: real Home Assistant plumbing (config-entry reload,
-entity registry, an actual database).  Those are checked by inspection only.
+What these do NOT cover: real Home Assistant plumbing.  ``tests/ha/`` does,
+against a real Home Assistant 2026.10.1 (see ``requirements_test_ha.txt``):
+setup through a config entry, the entity registry, a live recorder database,
+the nine services, and the v1 -> v2 store migration.
 
-Run:  python3 -I tests/test_coordinator.py
+Every stub in here is a place where a bug can hide, so the stubs mirror the
+*real* signatures and only the real signatures.  v0.2.0 shipped with a fake
+``Store`` whose constructor accepted a migration keyword that core had removed
+(and one stub `Store` too many -- the recorder's ``async_clear_statistics`` was
+stubbed at module level, where it no longer exists); the real integration died
+on setup and neither this suite nor CI could see it.  If a stub is more
+permissive than Home Assistant, it is a bug in the stub.
+
+Run:  python3 -I tests/test_coordinator.py        (needs Python 3.11+)
 """
 
 import asyncio
@@ -38,6 +48,12 @@ from pathlib import Path
 PKG = Path(__file__).resolve().parents[1] / "custom_components" / "taipower_bill"
 _TZ = timezone(timedelta(hours=8))
 NOW = [datetime(2026, 10, 14, 12, 0, tzinfo=_TZ)]  # the day the bug was reported
+
+# The coordinator uses ``asyncio.timeout``, which is 3.11+.  Home Assistant
+# 2026.10 needs 3.13 anyway, so this is only a guard against a confusing
+# AttributeError on an old interpreter.
+if sys.version_info < (3, 11):  # pragma: no cover
+    sys.exit(f"test_coordinator.py needs Python 3.11+ (running {sys.version.split()[0]})")
 
 failures = []
 passes = [0]
@@ -142,28 +158,72 @@ STORE_SAVES = []
 
 
 class Store:
-    """In-memory store; ``async_migrate_func`` is accepted like the real one."""
+    """In-memory stand-in for ``homeassistant.helpers.storage.Store``.
 
-    def __init__(self, hass, version, key, async_migrate_func=None, **kwargs):
+    The signature is deliberately the *real* one as of HA 2026.10::
+
+        Store(hass, version, key, *, minor_version=1, atomic_writes=False,
+              encoder=None, decoder=None)
+
+    There is **no** migration keyword -- the old ``migrate_func`` argument was
+    removed from core, and ``async_migrate_func`` never existed.  v0.2.0 passed
+    ``async_migrate_func=`` anyway, so ``TypeError`` was raised inside the
+    coordinator's constructor, ``async_setup_entry`` died and the integration
+    produced no entities at all on a real instance -- while this stub stayed
+    green precisely because its signature accepted the keyword.  Mirroring the
+    real signature is the entire point of having the stub.
+
+    Migration therefore has one legal route, reproduced faithfully here: a
+    subclass overrides ``_async_migrate_func``, and ``async_load`` calls it when
+    the stored version does not match the store's (core's
+    ``Store._async_load_data``).  A base ``Store`` raises ``NotImplementedError``.
+    """
+
+    def __init__(
+        self,
+        hass,
+        version,
+        key,
+        *,
+        minor_version=1,
+        atomic_writes=False,
+        encoder=None,
+        decoder=None,
+    ):
         self.hass, self.version, self.key = hass, version, key
-        self.migrate_func = async_migrate_func
+        self.minor_version = minor_version
         self.saved = None
 
+    async def _async_migrate_func(self, old_major, old_minor, old_data):
+        """A plain Store has no migration hook; core raises."""
+        raise NotImplementedError
+
     async def async_load(self):
-        payload = STORE_DATA.get(self.key)
-        if payload is None:
+        envelope = STORE_DATA.get(self.key)
+        if envelope is None:
             return None
         # The real Store hands back a *fresh* object decoded from JSON, so two
         # coordinators sharing a store key never alias one readings list.  Copy
         # here too, otherwise the stub would hide exactly the bugs it tests for.
-        payload = copy.deepcopy(payload)
-        if self.migrate_func is not None:
-            return await self.migrate_func(1, 1, payload)
-        return payload
+        envelope = copy.deepcopy(envelope)
+        data = envelope.get("data")
+        if (
+            envelope.get("version") == self.version
+            and envelope.get("minor_version") == self.minor_version
+        ):
+            return data
+        return await self._async_migrate_func(
+            envelope.get("version", 1), envelope.get("minor_version", 1), data
+        )
 
     async def async_save(self, data):
         self.saved = data
-        STORE_DATA[self.key] = copy.deepcopy(data)
+        STORE_DATA[self.key] = {
+            "version": self.version,
+            "minor_version": self.minor_version,
+            "key": self.key,
+            "data": copy.deepcopy(data),
+        }
         STORE_SAVES.append(self.key)
 
 
@@ -305,18 +365,30 @@ def _async_add_external_statistics(hass, metadata, statistics):
     EXTERNAL_STATS.append({"hass": hass, "metadata": metadata, "statistics": list(statistics)})
 
 
-def _async_clear_statistics(hass, statistic_ids):
-    CLEARED_STATS.append(list(statistic_ids))
-
-
 class StatisticMeanType:
     NONE = 0
     ARITHMETIC = 1
 
 
 class FakeRecorderInstance:
+    """Mirrors the parts of the real ``Recorder`` the coordinator uses.
+
+    ``async_clear_statistics`` lives on the **instance** -- HA 2026.10's
+    signature is ``Recorder.async_clear_statistics(statistic_ids, *,
+    on_done=None)`` and it is a plain ``@callback`` (no ``await``), reached
+    through ``get_instance(hass)``.  ``recorder/statistics.py`` only has the
+    *blocking* ``clear_statistics``, so there is deliberately no module-level
+    ``async_clear_statistics`` here either: an importable module-level helper
+    is exactly the shape that let the v0.2.0 ImportError go unnoticed.
+    """
+
     async def async_add_executor_job(self, func, *args):
         return func(*args)
+
+    def async_clear_statistics(self, statistic_ids, *, on_done=None):
+        CLEARED_STATS.append(list(statistic_ids))
+        if on_done is not None:
+            on_done()
 
 
 _module("homeassistant.components.recorder", get_instance=lambda hass: FakeRecorderInstance())
@@ -328,7 +400,6 @@ _module(
     "homeassistant.components.recorder.statistics",
     statistics_during_period=_statistics_during_period,
     async_add_external_statistics=_async_add_external_statistics,
-    async_clear_statistics=_async_clear_statistics,
     StatisticMeanType=StatisticMeanType,
 )
 
@@ -409,6 +480,13 @@ class FakeHass:
         self.states = FakeStates(states)
         self.config_entries = FakeConfigEntries()
         self.services = FakeServices()
+        # The real HomeAssistant sets ``self.loop`` in ``__init__``
+        # (core.py: ``self.loop = asyncio.get_running_loop()``) and the
+        # statistics-clear path uses it, so the stub needs one too.
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - constructed outside a loop
+            self.loop = asyncio.new_event_loop()
 
     async def async_add_executor_job(self, func, *args):
         return func(*args)
@@ -662,6 +740,13 @@ async def test_close_propose_confirm():
     result = await c.async_confirm_close()
     check("confirmed", result["confirmed"], True)
     check("reading appended", readings(c), ["2026-09-07", "2026-10-14"])
+    # The 度數 has to be *stored* with the reading.  In manual mode the figure
+    # only ever existed as ``manual_kwh``, and ``_write_reading`` zeroes that on
+    # the way out -- so a confirmation that forgot to carry it over closed the
+    # period blank: 上期/上上期 empty, and the external statistics series got no
+    # rows at all.  (tests/ha catches this too; catching it here keeps the fast
+    # suite honest as well.)
+    check("the closed reading kept the manual 度數", c.ledger.get_reading(date(2026, 10, 14))["kwh"], 350.0)
     check("pending cleared after confirm", c.pending, None)
     check("new period opens the next day", c.period_start, date(2026, 10, 15))
     ok("ledger saved", bool(STORE_SAVES))
@@ -957,26 +1042,35 @@ async def test_migration():
     reset_recorder()
     STORE_DATA.clear()
     c = make_coordinator({**BASE, "last_read_date": "2026-09-07"})
-    STORE_DATA[f"taipower_bill_ledger.{c.entry.entry_id}"] = {
-        "periods": [
-            {
-                "period_start": "2026-07-08",
-                "period_end": "2026-09-07",
-                "days": 62,
-                "kwh": 620.0,
-                "energy_cost": 2900.0,
-                "surcharge": 0.0,
-                "fixed_fees": 0.0,
-                "tax": 100.0,
-                "estimated_total": 3100.0,
-                "actual_total": 3000.0,
-                "variance": 100.0,
-                "avg_price_per_kwh": 4.8,
-                "seasons": ["summer"],
-                "source": "statistics",
-                "forced": False,
-            }
-        ]
+    key = f"taipower_bill_ledger.{c.entry.entry_id}"
+    # Seeded in the shape HA's storage file actually has: a version envelope
+    # around the payload.  A bare payload can never reach the migration hook, so
+    # seeding one would exercise a path core cannot produce.
+    STORE_DATA[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {
+            "periods": [
+                {
+                    "period_start": "2026-07-08",
+                    "period_end": "2026-09-07",
+                    "days": 62,
+                    "kwh": 620.0,
+                    "energy_cost": 2900.0,
+                    "surcharge": 0.0,
+                    "fixed_fees": 0.0,
+                    "tax": 100.0,
+                    "estimated_total": 3100.0,
+                    "actual_total": 3000.0,
+                    "variance": 100.0,
+                    "avg_price_per_kwh": 4.8,
+                    "seasons": ["summer"],
+                    "source": "statistics",
+                    "forced": False,
+                }
+            ]
+        },
     }
     await c.async_load_ledger()
     check("a v0.1 period becomes a reading", readings(c), ["2026-09-07"])
@@ -994,8 +1088,12 @@ async def test_migration():
     await anchor.async_load_ledger()
     check("the v0.1 option anchor becomes a reading", anchor.ledger.get_reading(date(2026, 9, 7))["note"], "migrated:options.last_read_date")
 
-    STORE_DATA[f"taipower_bill_ledger.{anchor.entry.entry_id}"] = {
-        "readings": [{"date": "2026-09-07", "kwh": 5.0}]
+    key = f"taipower_bill_ledger.{anchor.entry.entry_id}"
+    STORE_DATA[key] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": key,
+        "data": {"readings": [{"date": "2026-09-07", "kwh": 5.0}]},
     }
     again = make_coordinator({**BASE, "last_read_date": "2026-09-07"})
     await again.async_load_ledger()
@@ -1006,6 +1104,39 @@ async def test_migration():
     kept = await coordinator_mod._async_migrate_store(1, 1, payload)
     check("the storage migration keeps the payload", kept, payload)
     check("a None payload becomes a dict", await coordinator_mod._async_migrate_store(1, 0, None), {})
+
+    # A payload already at the store's version must NOT reach the migration
+    # hook -- core loads it verbatim (Store._async_load_data).
+    STORE_DATA.clear()
+    key = f"taipower_bill_ledger.{c.entry.entry_id}"
+    STORE_DATA[key] = {
+        "version": coordinator_mod.STORAGE_VERSION,
+        "minor_version": 1,
+        "key": key,
+        "data": {"readings": [{"date": "2026-09-07", "kwh": 42.0, "note": "as-stored"}]},
+    }
+    current = make_coordinator({**BASE, "last_read_date": "2026-09-07"})
+    await current.async_load_ledger()
+    check(
+        "a current-version payload is loaded verbatim",
+        current.ledger.get_reading(date(2026, 9, 7)).get("note"),
+        "as-stored",
+    )
+    await current.ledger.async_save()
+    check(
+        "the saved envelope carries the store version",
+        STORE_DATA[key]["version"],
+        coordinator_mod.STORAGE_VERSION,
+    )
+
+    # ...and a bare ``Store`` (no subclass override) has no hook at all.
+    plain = Store(object(), coordinator_mod.STORAGE_VERSION, "taipower_bill_ledger.plain")
+    try:
+        await plain._async_migrate_func(1, 1, {})
+        raised = None
+    except NotImplementedError:
+        raised = "NotImplementedError"
+    check("a bare Store has no migration hook", raised, "NotImplementedError")
 
 
 def test_sensor_declarations():
@@ -1082,8 +1213,17 @@ def test_sensor_entities():
             broken.append(f"{key}:missing attributes")
     check("state_attributes is legal and complete on all 17", broken, [])
 
-    check("next_read_date is an ISO string", sensors["next_read_date"].native_value, "2026-11-06")
-    check("pending_close_date is an ISO string", sensors["pending_close_date"].native_value, "2026-10-14")
+    # A HA 2026.10 date sensor formats its *state* itself: the platform calls
+    # ``value.isoformat()``, so ``native_value`` must hand back a real ``date``.
+    # v0.2.0 returned the already-formatted string and every date sensor died
+    # with ``'str' object has no attribute 'isoformat'`` on a real instance.
+    value = sensors["next_read_date"].native_value
+    check("next_read_date is a real date", value, date(2026, 11, 6))
+    check("...which formats itself for the state machine", value.isoformat(), "2026-11-06")
+    # This one is fed a *string* by the coordinator, exercising the coercion.
+    value = sensors["pending_close_date"].native_value
+    check("pending_close_date is coerced to a real date", value, date(2026, 10, 14))
+    check("...which formats itself too", value.isoformat(), "2026-10-14")
     check("a date sensor has no unit", sensors["next_read_date"].entity_description.native_unit_of_measurement, None)
 
     attrs = sensors["period_kwh"].extra_state_attributes

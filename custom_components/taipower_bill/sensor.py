@@ -24,6 +24,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ATTR_HISTORY, DOMAIN, SENSOR_DESCRIPTIONS
 from .coordinator import TaipowerDataUpdateCoordinator
+from .validators import parse_date
 
 # Which key in coordinator.data feeds each sensor key.
 _VALUE_KEYS: dict[str, str] = {
@@ -46,9 +47,25 @@ _VALUE_KEYS: dict[str, str] = {
     "pending_close_date": "pending_close_date",
 }
 
-#: Sensors whose state is a date.  A HA ``date`` sensor must not carry a unit
-#: and must be given an ISO string (or a date), not a float.
+#: Sensors whose state is a date.  A HA ``date`` sensor must not carry a unit,
+#: and in HA 2026.10 it must be given an actual ``date`` **object**: the platform
+#: calls ``value.isoformat()`` and raises ``ValueError`` on a string that is
+#: already formatted (``'str' object has no attribute 'isoformat'``).  Formatting
+#: to a string is only correct for the *attributes*, below.
 _DATE_KEYS = {"next_read_date", "pending_close_date"}
+
+
+def _as_date(value: Any) -> date | None:
+    """Coerce whatever the coordinator stored into a real ``date``."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        return parse_date(value)
+    return None
 
 
 def _iso(value: Any) -> str | None:
@@ -95,7 +112,7 @@ class TaipowerBillSensor(CoordinatorEntity, SensorEntity):
             return len(data.get(ATTR_HISTORY) or [])
         value = data.get(_VALUE_KEYS.get(key, ""))
         if key in _DATE_KEYS:
-            return _iso(value)
+            return _as_date(value)
         if isinstance(value, float):
             return round(value, 3)
         return value

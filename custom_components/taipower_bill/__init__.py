@@ -142,10 +142,16 @@ def _as_list(value: Any) -> list[str]:
     return [str(v) for v in value]
 
 
-def _resolve_coordinators(
-    hass: HomeAssistant, call: ServiceCall
-) -> dict[str, TaipowerDataUpdateCoordinator]:
-    """Map a service target (device/entity/entry_id) to our coordinators."""
+def _resolve_coordinators(call: ServiceCall) -> dict[str, TaipowerDataUpdateCoordinator]:
+    """Map a service target (device/entity/entry_id) to our coordinators.
+
+    ``hass`` comes from the call itself: HA 2026.10 invokes a service handler as
+    ``await target(service_call)`` -- exactly one positional argument -- so a
+    ``(hass, call)`` handler dies with ``TypeError: missing 1 required
+    positional argument: 'call'``.  The HomeAssistant instance is always
+    ``ServiceCall.hass``.
+    """
+    hass = call.hass
     entries: set[str] = set()
     if entry_id := call.data.get("entry_id"):
         entries.add(str(entry_id))
@@ -173,10 +179,8 @@ def _resolve_coordinators(
     }
 
 
-def _require_targets(
-    hass: HomeAssistant, call: ServiceCall
-) -> dict[str, TaipowerDataUpdateCoordinator]:
-    coordinators = _resolve_coordinators(hass, call)
+def _require_targets(call: ServiceCall) -> dict[str, TaipowerDataUpdateCoordinator]:
+    coordinators = _resolve_coordinators(call)
     if not coordinators:
         raise HomeAssistantError(
             "找不到 taipower_bill 的目標：請用 target: 指定裝置／實體，"
@@ -198,10 +202,10 @@ def _optional_date(value: Any, field: str):
     return _required_date(value, field)
 
 
-async def _handle_close_period(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_close_period(call: ServiceCall) -> dict:
     """Propose a 結算 -- or write it, when ``confirm`` is true."""
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_close_period(
             read_date=_optional_date(call.data.get("read_date"), "read_date"),
             actual_kwh=call.data.get("actual_kwh"),
@@ -212,24 +216,24 @@ async def _handle_close_period(hass: HomeAssistant, call: ServiceCall) -> dict:
     return {"close_period": results}
 
 
-async def _handle_confirm_close(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_confirm_close(call: ServiceCall) -> dict:
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_confirm_close()
     return {"confirmed": results}
 
 
-async def _handle_cancel_close(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_cancel_close(call: ServiceCall) -> dict:
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_cancel_close()
     return {"cancelled": results}
 
 
-async def _handle_add_reading(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_add_reading(call: ServiceCall) -> dict:
     wanted = _required_date(call.data.get("date"), "date")
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_add_reading(
             wanted,
             actual_kwh=call.data.get("actual_kwh"),
@@ -240,18 +244,18 @@ async def _handle_add_reading(hass: HomeAssistant, call: ServiceCall) -> dict:
     return {"add_reading": results}
 
 
-async def _handle_undo_close_period(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_undo_close_period(call: ServiceCall) -> dict:
     when = _optional_date(call.data.get("date"), "date")
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_undo_close_period(when)
     return {"undo_close_period": results}
 
 
-async def _handle_update_reading(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_update_reading(call: ServiceCall) -> dict:
     when = _required_date(call.data.get("date"), "date")
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_update_reading(
             when,
             new_date=_optional_date(call.data.get("new_date"), "new_date"),
@@ -263,9 +267,9 @@ async def _handle_update_reading(hass: HomeAssistant, call: ServiceCall) -> dict
     return {"update_reading": results}
 
 
-async def _handle_period_report(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_period_report(call: ServiceCall) -> dict:
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_period_report(
             when=_optional_date(call.data.get("date"), "date"),
             start=_optional_date(call.data.get("start"), "start"),
@@ -275,20 +279,20 @@ async def _handle_period_report(hass: HomeAssistant, call: ServiceCall) -> dict:
     return {"period_report": results}
 
 
-async def _handle_set_last_read_date(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_set_last_read_date(call: ServiceCall) -> dict:
     wanted = _required_date(call.data.get("date"), "date")
     reset_history = bool(call.data.get("reset_history", False))
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_set_last_read_date(
             wanted, reset_history=reset_history
         )
     return {"set_last_read_date": results}
 
 
-async def _handle_reset_ledger(hass: HomeAssistant, call: ServiceCall) -> dict:
+async def _handle_reset_ledger(call: ServiceCall) -> dict:
     results: dict[str, Any] = {}
-    for entry_id, coordinator in _require_targets(hass, call).items():
+    for entry_id, coordinator in _require_targets(call).items():
         results[entry_id] = await coordinator.async_reset_ledger(
             clear_readings=bool(call.data.get("clear_readings", True)),
             clear_baseline=bool(call.data.get("clear_baseline", True)),

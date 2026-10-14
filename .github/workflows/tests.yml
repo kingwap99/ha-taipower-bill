@@ -6,17 +6,22 @@ on:
   workflow_dispatch:
 
 jobs:
-  tests:
+  # The fast job: no Home Assistant installed, nothing to pip-install.  These
+  # suites stub ``homeassistant.*`` and run the real ``coordinator.py``, so they
+  # check the billing arithmetic, the period model and the exact arguments sent
+  # to the recorder.  They are green even when the integration cannot start on a
+  # real instance -- which is exactly what happened in v0.2.0, hence the second
+  # job.  (Both need Python 3.11+ because the coordinator uses asyncio.timeout.)
+  offline:
+    name: Offline suites (Home Assistant stubbed)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.14"
 
-      # Both suites are pure Python and stub out Home Assistant, so there is
-      # nothing to install.  -I keeps the runner's site-packages out of it.
       - name: Billing engine + config validation
         run: python3 -I tests/test_billing.py
 
@@ -25,3 +30,28 @@ jobs:
 
       - name: Byte-compile every module
         run: python3 -m compileall -q custom_components/taipower_bill
+
+  # The job that would have caught v0.2.0: a real Home Assistant 2026.10.1
+  # (pinned by pytest-homeassistant-custom-component), a real config entry, a
+  # real recorder database.  Home Assistant 2026.10 requires Python >= 3.14.2.
+  home-assistant:
+    name: Real Home Assistant 2026.10.1
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install the pinned Home Assistant test harness
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements_test_ha.txt
+
+      - name: Show the exact versions under test
+        run: pip show homeassistant pytest-homeassistant-custom-component | grep -E "^(Name|Version)"
+
+      - name: Run tests/ha
+        run: pytest -q
