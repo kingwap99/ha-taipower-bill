@@ -83,6 +83,10 @@ Home Assistant 自訂整合。把家中電表／能源監測（例如 Emporia Vu
 然後 **設定 → 儀表板 → 右上角三點 → 自訂資源**，新增
 URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 
+**升級時卡片要另外換檔案**（它不在整合資料夾裡），換完在瀏覽器按一次
+**Ctrl/Cmd + Shift + R** —— 自訂資源會被快取。卡片的版本寫在檔案開頭的註解裡
+（`taipower-bill-card  (v0.2.2)`），可以拿它對照你有沒有換成功。
+
 ---
 
 ## 每戶要填什麼
@@ -97,7 +101,9 @@ URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 | 來源感測器（退路） | 統計讀不到時改讀即時 state 的 entity；留空則只用你指定的來源 |
 
 「費率與附加費」在 **整合卡片 → 選項** 裡：夏月起迄、費率版本、每度附加費（球金＋空污）、
-每期固定費用、營業稅率、每月最低電費、一期月數。
+每期固定費用、營業稅率、每月最低電費、一期月數。「**通知目標**」也在這裡 ——
+挑手機（`notify.mobile_app_*`，可複選），結算的通知就會帶「確認／取消」按鈕；
+**留空＝不推**。
 
 > **附加費預設 0，請照電費單上的實際金額填入**，否則算出來會比帳單低。
 
@@ -134,7 +140,7 @@ URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 
 ## 產生出來的 entity
 
-每戶會生出 **17 個感測器、3 個按鈕、2 個 number**（`<base>` 是 HA 實際指派的 entity ID 前綴，
+每戶會生出 **17 個感測器、4 個按鈕、2 個 number**（`<base>` 是 HA 實際指派的 entity ID 前綴，
 中文裝置名會被轉寫，**請在整合的「實體」頁複製實際 ID**）：
 
 | Sensor | 意義 |
@@ -159,6 +165,10 @@ URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
 - `button.<base>_close_period` — **提出**一次結算（只提出，**不寫入**）
 - `button.<base>_confirm_close` — 確認寫入。**沒有待確認的結算時是 `unavailable`**
 - `button.<base>_cancel_close` — 丟掉這次的結算（本來就沒寫入任何東西）
+- `button.<base>_undo_close_period` — **撤銷最後一期**（按錯結算的救援）。屬性 `will_remove`
+  直接寫出會被移除的抄見日。**有待確認結算時它是 `unavailable`**（那時該按的是「取消」，
+  所以它不會裝成一副能用的樣子），帳本是空的時候也一樣不給按。按鈕實體沒有辦法反問
+  「你確定嗎？」，所以它把答案先寫在 `will_remove` 裡，要問就交給卡片或自動化。
 
 `_period_kwh` 與 `_period_cost` 宣告 `state_class: total` 並附上 `last_reset`＝本期起算日，
 所以可以直接餵給能源面板的長期統計，結算時不會被記成一次巨大的負向變化。
@@ -173,7 +183,33 @@ HA 的服務沒有內建的確認步驟（只有 Lovelace 卡片的 `tap_action:
 2. 15 分鐘內按「確認結算」（或呼叫 `taipower_bill.confirm_close`）才真的寫入。
 3. 逾時就自動失效，不需要清理；按「取消結算」也可以直接丟掉。
 
-真的按錯了還有三層救援：撤銷最後一期、改寫某一筆的日期／金額、重算已結算期別（見「服務」）。
+真的按錯了還有救援：撤銷最後一期、改寫某一筆的日期／金額、重算已結算期別（見「服務」）。
+
+**連「確認」都按錯的話**（手機在口袋裡被按到也算），有三條路可以退：
+
+1. **手機通知上的按鈕**：提出結算時會推一則帶「確認寫入／取消」的通知，而**寫入成功之後
+   同一則通知會換成「撤銷這一期」** —— 不用打開 Home Assistant 就能收回來。按鈕失效時
+   （最常見的是提案已過 15 分鐘）會回一則寫明原因的訊息，不會靜默地什麼都不做。
+   要在**選項 → 通知目標**裡挑手機（可複選）；**不填就不推**。下拉只列
+   `notify.mobile_app_*`，因為只有 Companion App 的通知能帶按鈕 —— HA 核心的
+   `persistent_notification` 沒有這個能力（它只收 message／title／notification_id）。
+
+   **通知的兩個設計細節**：一戶**只有一則**通知（同一個 tag，新訊息取代舊的，所以鎖定畫面上
+   永遠是最新狀態，不會留著一則按了卻說「沒有生效」的過期提案）；而且它會要求系統
+   **留住它**（iOS：`time-sensitive`，穿透專注模式並留在鎖定畫面；Android：高重要性 channel、
+   不設到期）。iOS 要在 **設定 → 通知 → Home Assistant → 時間敏感通知** 打開才會生效。
+
+   > 想確認通知這條路有沒有通，做這個 30 秒測試就好：按 `button.<base>_close_period`
+   > （**只提出，不寫入任何東西**）→ 手機會收到帶兩顆按鈕的通知 → 按「取消」。
+   > 完全沒寫入帳本，可以放心按。
+2. **`button.<base>_undo_close_period`**：實體按鈕，按下去就撤銷最後一期。
+3. **卡片上的「撤銷最後一期（日期）」**：常駐在「歷次帳期」上方，按下去會先跳確認視窗並
+   寫出**會移除哪個抄見日、本期會從哪天重新起算、要怎麼補回來**。
+
+卡片的確認對話框是刻意設計的：**結算本身不問**（它只提出、不寫入任何東西 —— 在一個什麼都
+沒做的地方問「你確定嗎？」，只會訓練你以後把真正重要的那個確認也按掉），而**「確認寫入」
+與「撤銷」一定問，而且把日期與後果寫在問題裡**（「確定要撤銷最後一期？」不算確認，那叫
+引誘 —— 你根本不知道要失去什麼）。
 
 ### 屬性
 
@@ -201,8 +237,21 @@ households:
 ```
 
 卡片會依 `_period_kwh` 的後綴自動推導同一戶的其他 entity，所以只要指向 `period_kwh` 那一個。
-內容包含當期進度條、跨季分攤說明、六段累進明細、歷史表（**可展開看全部期別**），
+內容包含當期進度條、跨季分攤說明、六段累進明細、歷史表（**可展開看全部期別**）、抄見日清單，
 以及有待確認結算時的「確認寫入／取消」按鈕。
+
+防誤按的部分長這樣：
+
+- 有待確認結算時，那一塊用虛線框標出來，並寫明「**這筆結算還沒寫入**」、抄見日、本期度數、
+  推定電費、**有效期限剩幾分鐘**。
+- 沒有待確認結算、但帳本裡有抄見日時，常駐一列「**撤銷最後一期（日期）**」（虛線框），
+  按下去先跳確認視窗。它不在歷史表裡面，不需要展開才找得到。
+- 「確認寫入」與「撤銷」都會跳 `window.confirm`，並把**日期、度數、後果、如何補回來**
+  寫進問題裡。
+
+> 這一版修掉了一個從 v0.1.2 就存在的 bug：卡片把內容掛在 shadow root **外面**，
+> 所以瀏覽器**從頭到尾一個字都沒畫**（沒有錯誤訊息、高度 0）。詳見 CHANGELOG 0.2.2。
+> 換卡片檔案之後請 **Ctrl/Cmd + Shift + R** 一次。
 
 ---
 
@@ -265,6 +314,40 @@ response_variable: june
 
 ## 疑難排解
 
+### 卡片是空白的（v0.2.1 以前一定是這樣）
+
+v0.1.2 到 v0.2.1 的卡片有一個 bug：內容被掛在 shadow root **外面**，而 shadow host 上沒有
+`<slot>`，所以瀏覽器**完全不會畫**，也不會報錯。**如果你那一版的卡片是一片空白，就是它**
+—— 換上 v0.2.2 的 `dashboard/taipower-bill-card.js`（再 Ctrl/Cmd + Shift + R）就會出現。
+
+要自己驗證的話，在瀏覽器開發者工具裡選到 `taipower-bill-card` 那個元素，看它的
+`#shadow-root`：壞掉的版本裡面是空的，而 `childNodes` 卻有東西（東西都在不渲染的那一半）。
+
+如果換了新卡片還是空白，依序檢查：
+
+- 自訂資源的 URL 是 `/local/community/taipower-bill-card.js`，類型選 **JavaScript**；
+  檔案真的在 `config/www/community/` 底下（`/local/` 對應的是 `config/www/`）。
+- 瀏覽器有沒有硬重新整理（自訂資源會被快取）。
+- 開發者工具的 Console 有沒有紅字；`type: custom:taipower-bill-card` 拼字是否正確。
+- 卡片的 `entity:` 指向的是**存在**的那顆感測器（指向不存在的那一顆，卡片會直接寫
+  「找不到實體」，而不是留白）。
+
+### 手機沒收到結算通知／只有 Apple Watch 收到
+
+依序看這幾點：
+
+- **選項裡有沒有挑「通知目標」？** 沒挑就完全不推（預設是安靜的）。
+- **只有手錶收到**：戴著 Apple Watch、手機鎖著時，iOS 只把通知送到手錶 —— 這是 iOS 的
+  路由，不是整合的問題。iPhone 往下滑開「通知中心」通常還在；把手錶拿下來再測一次，
+  手機就會跳出來。
+- **通知一下就消失**：本版已把 payload 改成 `time-sensitive`（iOS）與高重要性 channel
+  （Android）。iOS 還要在 **設定 → 通知 → Home Assistant → 時間敏感通知** 打開。
+- **按了按鈕卻沒反應**：最常見的是提案已經過期（15 分鐘），這時會回一則
+  「這個按鈕沒有生效：…」的通知說明原因；如果連那則都沒有，看 Log 裡 `taipower_bill`
+  的 warning（`無法發送通知到 notify.…`），那代表目標服務名稱不對或裝置離線。
+- 服務名稱要長得像 `notify.mobile_app_iphone`，可以在 **開發者工具 → 動作** 裡搜 `notify`
+  確認實際名稱。
+
 ### 數值幾乎都是空的／`days_elapsed` 是 0
 
 看屬性的 `config_issues`，它會直接告訴你哪一種：
@@ -325,10 +408,17 @@ HA 的 `DEVICE_CLASS_STATE_CLASSES` 規定 `energy` 只能用 `total`／`total_i
 
 ```bash
 python3 -I tests/test_billing.py       # 計費引擎＋設定驗證（16 項）
-python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外部統計／感測器（218 項）
+python3 -I tests/test_coordinator.py   # 帳期／結算流程／recorder／外部統計／感測器（240 項）
 ```
 
-**一套真機測試**：跑在**真的 Home Assistant 2026.10.1** 上（24 項）。
+**一套卡片測試**：跑真的卡片程式，**零外部依賴**（卡片是純 DOM，用一個 ~60 行的 shim
+就足以真的跑它，所以不必 npm install 任何東西）。
+
+```bash
+node tests/test_card_render.mjs        # 渲染＋確認對話框（26 項）
+```
+
+**一套真機測試**：跑在**真的 Home Assistant 2026.10.1** 上（32 項）。
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
@@ -342,6 +432,16 @@ pytest                                 # 等同 pytest tests/ha
 entity registry、**活的 recorder 資料庫**（讀統計、寫外部統計、清除統計）、九個服務的完整流程
 （提出→確認→撤銷、`add_reading`／`update_reading`／`period_report`／`set_last_read_date`／
 `reset_ledger`），以及 v1→v2 的 store 遷移與「比程式新的儲存檔不會被覆蓋」。
+
+`test_real_notify.py` 走的是**沒有辦法 stub 的那條路**：通知按鈕按下去之後，回到整合的
+只有一個 `mobile_app_notification_action` **事件**（不是服務呼叫，也沒有通知的其他欄位），
+所以那裡測的是「動作字串自己帶 entry id、整合只認自己的、別人家的 `CONFIRM_…` 不會動到
+帳本」，以及失效的按鈕會回話、沒設定目標就完全不推。（Companion App 裝不進來，所以那個
+`notify.mobile_app_*` 服務是測試自己註冊的，其餘全部是真的整合。）
+
+`tests/test_card_render.mjs` 盯的是**看不到的失敗**：內容有沒有真的進 shadow root（見
+「疑難排解 → 卡片是空白的」），以及每個會寫入帳本的動作是不是都先問過、而且問題裡有
+日期與後果。它的第一項斷言就是把 shadow-DOM 那個 bug 重新植入時會紅的那一項。
 
 > v0.2.0 就是死在這一層：離線測試全綠、CI 也全綠，真機上卻一個 entity 都生不出來
 > （四個原因見 CHANGELOG 0.2.1）。根本問題是 **stub 比真貨寬鬆** —— 真 HA 會擋的呼叫，

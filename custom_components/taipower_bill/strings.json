@@ -52,7 +52,11 @@
           "fixed_fees_per_period": "Fixed fee per period",
           "business_tax_rate": "Business tax rate (0.05 = 5%)",
           "min_charge_per_month": "Minimum charge per month",
-          "period_months": "Months per period (bimonthly = 2)"
+          "period_months": "Months per period (bimonthly = 2)",
+          "notify_targets": "Push the close confirmation to these devices (multi-select; empty = no push)"
+        },
+        "data_description": {
+          "notify_targets": "Only the official Home Assistant app renders the confirmation buttons; core notifications (persistent_notification) cannot carry actions in 2026.10. Empty = no push notification."
         }
       }
     }
@@ -67,32 +71,79 @@
   },
   "entity": {
     "sensor": {
-      "period_kwh": { "name": "Current period usage" },
-      "period_cost": { "name": "Current period cost (estimated)" },
-      "avg_daily_kwh": { "name": "Average daily usage" },
-      "projected_period_kwh": { "name": "Projected period usage" },
-      "projected_period_cost": { "name": "Projected period cost" },
-      "avg_price_per_kwh": { "name": "Effective price per kWh" },
-      "marginal_price_per_kwh": { "name": "Marginal price per kWh" },
-      "days_remaining": { "name": "Days until next read" },
-      "next_read_date": { "name": "Next projected read date" },
-      "bill_variance": { "name": "Estimate vs actual variance" },
-      "closed_periods": { "name": "Closed periods" },
-      "last_period_kwh": { "name": "Previous period energy" },
-      "last_period_cost": { "name": "Previous period cost" },
-      "last_period_avg_price": { "name": "Previous period average price" },
-      "prev_period_kwh": { "name": "Period before last energy" },
-      "prev_period_cost": { "name": "Period before last cost" },
-      "pending_close_date": { "name": "Pending meter-read date" }
+      "period_kwh": {
+        "name": "Current period usage"
+      },
+      "period_cost": {
+        "name": "Current period cost (estimated)"
+      },
+      "avg_daily_kwh": {
+        "name": "Average daily usage"
+      },
+      "projected_period_kwh": {
+        "name": "Projected period usage"
+      },
+      "projected_period_cost": {
+        "name": "Projected period cost"
+      },
+      "avg_price_per_kwh": {
+        "name": "Effective price per kWh"
+      },
+      "marginal_price_per_kwh": {
+        "name": "Marginal price per kWh"
+      },
+      "days_remaining": {
+        "name": "Days until next read"
+      },
+      "next_read_date": {
+        "name": "Next projected read date"
+      },
+      "bill_variance": {
+        "name": "Estimate vs actual variance"
+      },
+      "closed_periods": {
+        "name": "Closed periods"
+      },
+      "last_period_kwh": {
+        "name": "Previous period energy"
+      },
+      "last_period_cost": {
+        "name": "Previous period cost"
+      },
+      "last_period_avg_price": {
+        "name": "Previous period average price"
+      },
+      "prev_period_kwh": {
+        "name": "Period before last energy"
+      },
+      "prev_period_cost": {
+        "name": "Period before last cost"
+      },
+      "pending_close_date": {
+        "name": "Pending meter-read date"
+      }
     },
     "number": {
-      "manual_period_kwh": { "name": "Period usage (manual)" },
-      "actual_bill": { "name": "Actual billed amount" }
+      "manual_period_kwh": {
+        "name": "Period usage (manual)"
+      },
+      "actual_bill": {
+        "name": "Actual billed amount"
+      }
     },
     "button": {
-      "close_period": { "name": "Close period" },
-      "confirm_close": { "name": "Confirm close" },
-      "cancel_close": { "name": "Cancel close" }
+      "close_period": {
+        "name": "Close period"
+      },
+      "confirm_close": {
+        "name": "Confirm close"
+      },
+      "cancel_close": {
+        "name": "Cancel close"
+      },
+      "undo_close_period": {
+        "name": "Undo last close"
+      }
     }
   }
 }

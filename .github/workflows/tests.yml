@@ -12,6 +12,11 @@ jobs:
   # to the recorder.  They are green even when the integration cannot start on a
   # real instance -- which is exactly what happened in v0.2.0, hence the second
   # job.  (Both need Python 3.11+ because the coordinator uses asyncio.timeout.)
+  #
+  # The card suite rides along here because it needs nothing but node: the card
+  # is plain DOM, and its shim is 60 lines in the test file itself.  It is what
+  # catches "the card renders nothing at all" -- a failure with no error message
+  # anywhere, which is why it went unnoticed from v0.1.2 to v0.2.1.
   offline:
     name: Offline suites (Home Assistant stubbed)
     runs-on: ubuntu-latest
@@ -22,11 +27,18 @@ jobs:
         with:
           python-version: "3.14"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Billing engine + config validation
         run: python3 -I tests/test_billing.py
 
       - name: Coordinator (window / guards / recorder call shape / state classes)
         run: python3 -I tests/test_coordinator.py
+
+      - name: Card (renders into its shadow root; asks before it writes)
+        run: node tests/test_card_render.mjs
 
       - name: Byte-compile every module
         run: python3 -m compileall -q custom_components/taipower_bill

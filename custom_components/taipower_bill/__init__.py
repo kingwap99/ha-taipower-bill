@@ -29,9 +29,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
-from .const import DOMAIN, PLATFORMS
+from .const import ACTION_CANCEL, ACTION_CONFIRM, ACTION_UNDO, DOMAIN, PLATFORMS
 from .coordinator import TaipowerDataUpdateCoordinator
-from .validators import parse_date
+from .validators import parse_date, parse_notify_action
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -325,6 +325,63 @@ def _async_register_services(hass: HomeAssistant) -> None:
             schema=schema,
             supports_response=SupportsResponse.OPTIONAL,
         )
+
+
+#: Fired by the Companion App when a notification button is pressed.  Nothing
+#: else comes back with it -- no service call, no payload -- which is why the
+#: entry id travels inside the action string.  Home Assistant core relies on the
+#: same event in its confirmable-notification blueprint:
+#: ``homeassistant/components/script/blueprints/confirmable_notification.yaml``.
+EVENT_MOBILE_APP_ACTION = "mobile_app_notification_action"
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Register the notification-button listener once per HA instance.
+
+    Registered here rather than per config entry because the event is global: one
+    listener serves every 戶, and entries added later need nothing.  ``hass`` is
+    captured in the closure on purpose -- ``Event`` carries no ``hass`` attribute
+    in HA 2026.10 (``homeassistant.core.Event.__init__`` takes only the type, the
+    data and an optional context), so a module-level listener could not resolve
+    the instance whose entry the action names.
+    """
+
+    async def _handle(event) -> None:
+        await _async_handle_notification_action(hass, event)
+
+    hass.bus.async_listen(EVENT_MOBILE_APP_ACTION, _handle)
+    _async_register_services(hass)
+    return True
+
+
+async def _async_handle_notification_action(hass: HomeAssistant, event) -> None:
+    """Confirm, cancel or undo a 結算 from a notification button.
+
+    Anything that does not parse as one of our own actions is ignored, not
+    guessed at: ``mobile_app_notification_action`` is shared by every integration
+    and by hand-written automations, so acting on a stray ``CONFIRM_...`` would
+    write to the ledger.
+    """
+    parsed = parse_notify_action((event.data or {}).get("action"))
+    if parsed is None:
+        return
+    kind, entry_id = parsed
+    coordinator = ((hass.data.get(DOMAIN) or {}).get(entry_id) or {}).get("coordinator")
+    if coordinator is None:
+        _LOGGER.debug("通知動作 %s：找不到 entry %s（可能已移除）", kind, entry_id)
+        return
+    try:
+        if kind == ACTION_CONFIRM:
+            await coordinator.async_confirm_close()
+        elif kind == ACTION_CANCEL:
+            await coordinator.async_cancel_close()
+        elif kind == ACTION_UNDO:
+            await coordinator.async_undo_close_period()
+    except Exception as err:  # noqa: BLE001 - a button must never crash the bus
+        _LOGGER.warning("%s: 通知按鈕「%s」沒有完成：%s", coordinator.label, kind, err)
+        # Tell the user on the same channel they pressed -- a silently dead
+        # button (an expired proposal, most often) is the worst outcome.
+        await coordinator.notify_action_failed(kind, err)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

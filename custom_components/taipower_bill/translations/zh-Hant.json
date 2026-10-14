@@ -52,7 +52,11 @@
           "fixed_fees_per_period": "每期固定費用",
           "business_tax_rate": "營業稅率（0.05 = 5%）",
           "min_charge_per_month": "每月最低電費",
-          "period_months": "一期月數（雙月＝2）"
+          "period_months": "一期月數（雙月＝2）",
+          "notify_targets": "結算通知要推播的手機（可多選；留空＝不推播）"
+        },
+        "data_description": {
+          "notify_targets": "只有 Home Assistant 官方 App 的通知能顯示「確認／取消」按鈕；HA 內建通知（persistent_notification）在 2026.10 不支援動作按鈕。留空＝不推播，一切照舊只在 HA 裡顯示。"
         }
       }
     }
@@ -67,32 +71,79 @@
   },
   "entity": {
     "sensor": {
-      "period_kwh": { "name": "本期用電量" },
-      "period_cost": { "name": "本期電費（推定）" },
-      "avg_daily_kwh": { "name": "平均每日用電" },
-      "projected_period_kwh": { "name": "本期推估總度數" },
-      "projected_period_cost": { "name": "本期推估總電費" },
-      "avg_price_per_kwh": { "name": "當期每度平均電價" },
-      "marginal_price_per_kwh": { "name": "下一度適用費率" },
-      "days_remaining": { "name": "距下次抄表" },
-      "next_read_date": { "name": "下次抄表日（推定）" },
-      "bill_variance": { "name": "推定與實際差額" },
-      "closed_periods": { "name": "已結算期數" },
-      "last_period_kwh": { "name": "上一期用電量" },
-      "last_period_cost": { "name": "上一期電費" },
-      "last_period_avg_price": { "name": "上一期每度均價" },
-      "prev_period_kwh": { "name": "上上期用電量" },
-      "prev_period_cost": { "name": "上上期電費" },
-      "pending_close_date": { "name": "待確認的抄見日" }
+      "period_kwh": {
+        "name": "本期用電量"
+      },
+      "period_cost": {
+        "name": "本期電費（推定）"
+      },
+      "avg_daily_kwh": {
+        "name": "平均每日用電"
+      },
+      "projected_period_kwh": {
+        "name": "本期推估總度數"
+      },
+      "projected_period_cost": {
+        "name": "本期推估總電費"
+      },
+      "avg_price_per_kwh": {
+        "name": "當期每度平均電價"
+      },
+      "marginal_price_per_kwh": {
+        "name": "下一度適用費率"
+      },
+      "days_remaining": {
+        "name": "距下次抄表"
+      },
+      "next_read_date": {
+        "name": "下次抄表日（推定）"
+      },
+      "bill_variance": {
+        "name": "推定與實際差額"
+      },
+      "closed_periods": {
+        "name": "已結算期數"
+      },
+      "last_period_kwh": {
+        "name": "上一期用電量"
+      },
+      "last_period_cost": {
+        "name": "上一期電費"
+      },
+      "last_period_avg_price": {
+        "name": "上一期每度均價"
+      },
+      "prev_period_kwh": {
+        "name": "上上期用電量"
+      },
+      "prev_period_cost": {
+        "name": "上上期電費"
+      },
+      "pending_close_date": {
+        "name": "待確認的抄見日"
+      }
     },
     "number": {
-      "manual_period_kwh": { "name": "本期度數（手動）" },
-      "actual_bill": { "name": "實際電費金額" }
+      "manual_period_kwh": {
+        "name": "本期度數（手動）"
+      },
+      "actual_bill": {
+        "name": "實際電費金額"
+      }
     },
     "button": {
-      "close_period": { "name": "結算本期" },
-      "confirm_close": { "name": "確認結算" },
-      "cancel_close": { "name": "取消結算" }
+      "close_period": {
+        "name": "結算本期"
+      },
+      "confirm_close": {
+        "name": "確認結算"
+      },
+      "cancel_close": {
+        "name": "取消結算"
+      },
+      "undo_close_period": {
+        "name": "撤銷最後一期"
+      }
     }
   }
 }

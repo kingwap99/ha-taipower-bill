@@ -39,4 +39,4 @@ async def test_setup_manual_mode(hass: HomeAssistant) -> None:
         print(f"    {e.entity_id:58s} = {state}")
     print(f"=== unavailable/unknown/missing: {bad}")
     assert ok
-    assert len(ents) >= 22, f"expected the full entity set, got {len(ents)}"
+    assert len(ents) >= 23, f"expected the full entity set, got {len(ents)}"

@@ -430,6 +430,7 @@ for _name in ("tariffs", "billing", "validators", "const", "coordinator", "senso
 coordinator_mod = sys.modules["taipower_bill.coordinator"]
 const_mod = sys.modules["taipower_bill.const"]
 sensor_mod = sys.modules["taipower_bill.sensor"]
+validators_mod = sys.modules["taipower_bill.validators"]
 TaipowerDataUpdateCoordinator = coordinator_mod.TaipowerDataUpdateCoordinator
 
 logging.basicConfig(level=logging.CRITICAL)  # the ERROR-level config logs are expected
@@ -1272,6 +1273,76 @@ def test_payload_shapes():
     ok("summary lists the seasons", isinstance(summary["seasons"], list) and summary["seasons"], summary["seasons"])
 
 
+def test_notify_actions():
+    """The action string is the *only* thing a notification button sends back.
+
+    The Companion App fires ``mobile_app_notification_action`` with nothing but
+    ``event.data.action`` -- no service call, no payload, none of the other keys
+    of the notification -- so the entry it belongs to has to be encoded in the
+    string itself.  Home Assistant core does the same in its own blueprint
+    (``CONFIRM_<context.id>``), which is why the format below is not arbitrary.
+    """
+    v = validators_mod
+    entry = "01M4V592FM4D25H7BSC9NEPNB1"
+
+    for kind in (v.ACTION_CONFIRM, v.ACTION_CANCEL, v.ACTION_UNDO):
+        action = v.notify_action(kind, entry)
+        check(f"{kind} round-trips", v.parse_notify_action(action), (kind, entry))
+
+    # Split on the *first* underscore, so an entry id that contains one still
+    # comes back whole rather than being truncated.
+    check(
+        "an entry id with an underscore survives",
+        v.parse_notify_action("TAIPOWER_CONFIRM_a_b"),
+        ("CONFIRM", "a_b"),
+    )
+
+    # Everything that is not ours must be ignored, not guessed at: the event is
+    # shared with every other integration and with hand-written automations, and
+    # acting on a stray CONFIRM_… would write to the ledger.
+    for foreign in (
+        None,
+        "",
+        "CONFIRM_abc",  # the core blueprint's own shape
+        "DISMISS_abc",
+        "TAIPOWER_",
+        "TAIPOWER_CONFIRM_",  # no entry id
+        "TAIPOWER_nope_abc",  # unknown kind
+        "taipower_confirm_abc",  # our prefix is upper case, deliberately
+        123,
+    ):
+        check(f"ignored: {foreign!r}", v.parse_notify_action(foreign), None)
+
+    # notify targets: stored options and hand-written YAML differ on the domain.
+    check(
+        "full service name",
+        v.normalise_notify_target("notify.mobile_app_iphone"),
+        ("notify", "mobile_app_iphone"),
+    )
+    check(
+        "bare name gets the notify domain",
+        v.normalise_notify_target("mobile_app_iphone"),
+        ("notify", "mobile_app_iphone"),
+    )
+    check("too many dots is refused", v.normalise_notify_target("a.b.c"), None)
+    check("a non-string is refused", v.normalise_notify_target(7), None)
+    check("absent option is no targets", v.normalise_notify_targets(None), [])
+    check(
+        "a bare string is one target",
+        v.normalise_notify_targets("notify.mobile_app_x"),
+        [("notify", "mobile_app_x")],
+    )
+    check(
+        "the same target written two ways collapses",
+        v.normalise_notify_targets(["notify.mobile_app_x", "mobile_app_x", "a.b.c"]),
+        [("notify", "mobile_app_x")],
+    )
+
+    # The keys are re-exported by const, which is what the coordinator imports.
+    check("const re-exports the notify option", const_mod.CONF_NOTIFY_TARGETS, "notify_targets")
+    check("const re-exports the undo action", const_mod.ACTION_UNDO, "UNDO")
+
+
 # ==========================================================================
 # 5. runner
 # ==========================================================================
@@ -1294,6 +1365,7 @@ SYNC_TESTS = [
     test_sensor_declarations,
     test_sensor_entities,
     test_payload_shapes,
+    test_notify_actions,
 ]
 
 

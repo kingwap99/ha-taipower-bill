@@ -77,7 +77,7 @@ async def _call(hass: HomeAssistant, service: str, data: dict):
 
 
 def test_entities_exist(hass: HomeAssistant) -> None:
-    """22 entities, and the two DATE sensors carry a *date*, not a formatted str.
+    """23 entities, and the two DATE sensors carry a *date*, not a formatted str.
 
     The regression this pins down: HA 2026.10 does ``value.isoformat()`` on a
     ``device_class: date`` sensor, so handing it a string raises ValueError and

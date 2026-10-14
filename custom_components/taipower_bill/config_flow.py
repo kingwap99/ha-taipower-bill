@@ -33,6 +33,7 @@ from .const import (
     CONF_LABEL,
     CONF_LAST_READ_DATE,
     CONF_MIN_CHARGE_PER_MONTH,
+    CONF_NOTIFY_TARGETS,
     CONF_PERIOD_MONTHS,
     CONF_SOURCE_ENTITIES,
     CONF_SOURCE_MODE,
@@ -154,6 +155,22 @@ class TaipowerBillOptionsFlow(OptionsFlow):
     def __init__(self, entry: ConfigEntry) -> None:
         self._entry = entry
 
+    def _notify_options(self) -> list[str]:
+        """``notify.*`` services that can actually render the 確認／取消 buttons.
+
+        ``data.actions`` is a Companion App feature -- core's
+        ``persistent_notification`` accepts no actions at all in HA 2026.10 -- and
+        the app's services are the ``mobile_app_*`` ones.  Listing anything else
+        would only produce notifications whose buttons do nothing.
+
+        ``custom_value`` is on in the schema as well, because a phone that is
+        offline can drop out of the registry; without it a target saved earlier
+        would silently disappear the next time this form is opened.
+        """
+        services = self.hass.services.async_services().get("notify") or {}
+        mobile = sorted(name for name in services if name.startswith("mobile_app_"))
+        return [f"notify.{name}" for name in mobile]
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             return self.async_create_entry(title="", data=user_input)
@@ -200,6 +217,19 @@ class TaipowerBillOptionsFlow(OptionsFlow):
                         CONF_PERIOD_MONTHS, default=cur.get(CONF_PERIOD_MONTHS, DEFAULT_PERIOD_MONTHS)
                     ): NumberSelector(
                         NumberSelectorConfig(min=1, max=3, step=1, mode=NumberSelectorMode.BOX)
+                    ),
+                    # 結算通知（含確認／取消按鈕）要送到哪幾支手機。留空＝不推播，
+                    # 一切照舊只在 HA 裡顯示通知。
+                    vol.Optional(
+                        CONF_NOTIFY_TARGETS,
+                        default=list(cur.get(CONF_NOTIFY_TARGETS) or []),
+                    ): SelectSelector(
+                        SelectSelectorConfig(
+                            options=self._notify_options(),
+                            multiple=True,
+                            custom_value=True,
+                            mode=SelectSelectorMode.DROPDOWN,
+                        )
                     ),
                 }
             ),

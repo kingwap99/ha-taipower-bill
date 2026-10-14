@@ -62,12 +62,16 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .billing import BillResult, BillingConfig, compute_bill
 from .const import (
+    ACTION_CANCEL,
+    ACTION_CONFIRM,
+    ACTION_UNDO,
     CONF_BUSINESS_TAX_RATE,
     CONF_CYCLE_DAYS,
     CONF_FIXED_FEES_PER_PERIOD,
     CONF_LABEL,
     CONF_LAST_READ_DATE,
     CONF_MIN_CHARGE_PER_MONTH,
+    CONF_NOTIFY_TARGETS,
     CONF_PERIOD_MONTHS,
     CONF_SOURCE_ENTITIES,
     CONF_SOURCE_MODE,
@@ -85,7 +89,7 @@ from .const import (
     UNIT_TWD,
 )
 from .tariffs import REVISIONS
-from .validators import parse_date
+from .validators import normalise_notify_targets, notify_action, parse_date
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -447,6 +451,23 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         #: True while our persistent notification for the pending 結算 is on
         #: screen, so we never try to dismiss one we did not create.
         self._notification_open = False
+        #: ``notify.*`` services that should also receive the 結算 notification
+        #: with 確認／取消 buttons.  Only the Companion App renders the buttons
+        #: (``persistent_notification`` cannot carry them in HA 2026.10), and it
+        #: reports a press back as a ``mobile_app_notification_action`` *event*,
+        #: which ``__init__.py`` listens for -- so the entry_id travels inside
+        #: the action string instead.  Empty by default: no surprise pushes.
+        self.notify_targets: list[tuple[str, str]] = normalise_notify_targets(
+            self.options.get(CONF_NOTIFY_TARGETS)
+        )
+        #: **One** tag per 戶, on purpose.  On iOS a notification with a tag
+        #: *replaces* the one before it, so this keeps exactly one 台電 notification
+        #: per household on the lock screen and it is always the current one:
+        #: 待確認結算 → 已結算（帶撤銷）→ 已撤銷／操作未完成.  Two tags would leave the
+        #: stale proposal sitting there with buttons that can no longer work --
+        #: pressing one answers 「這個按鈕沒有生效」, which reads as a broken feature
+        #: even though it is telling the truth.
+        self._notify_tag = f"{DOMAIN}_{entry.entry_id}"
         #: Per-poll live figures for windows whose 抄見日 is today (see
         #: ``async_live_windows``); reset at the start of every poll.
         self._live_windows: dict[str, dict] = {}
@@ -940,6 +961,156 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         )
         return "\n".join(lines)
 
+    def _pending_phone_message(self) -> str:
+        """One terse line for the lock screen -- the full text is in HA itself."""
+        pending = self.pending or {}
+        bill = pending.get("bill") or {}
+        bits = [
+            f"帳期 {pending.get('period_start')} → {pending.get('read_date')}",
+            f"{pending.get('kwh')} 度",
+            f"推估 {bill.get('estimated_total')} 元",
+        ]
+        if pending.get("actual_bill") is not None:
+            bits.append(f"帳單 {pending.get('actual_bill')} 元")
+        return "｜".join(str(b) for b in bits)
+
+    async def _async_send_to_phones(
+        self,
+        message: str,
+        title: str,
+        actions: list[dict[str, str]] | None = None,
+    ) -> None:
+        """Push one notification to every configured Companion App target.
+
+        ``actions`` is what turns the notification into buttons.  Home Assistant's
+        own ``confirmable_notification`` script blueprint sends exactly this shape
+        (``data.actions: [{action, title}]``) and then waits for the
+        ``mobile_app_notification_action`` event, which is the in-tree proof that
+        the round trip works:
+
+          homeassistant/components/script/blueprints/confirmable_notification.yaml
+
+        ``persistent_notification`` -- what the dashboard shows -- cannot carry
+        buttons at all in HA 2026.10: its ``async_create`` accepts only
+        ``message``/``title``/``notification_id``, and the ``Notification``
+        TypedDict has no ``actions`` key.  So the buttons exist only here.
+
+        A bad or missing target must never break a 結算, hence the per-target
+        try/except: the ledger write has already happened by the time the
+        follow-up goes out.
+
+        The extra ``data`` keys are not decoration.  A banner that fades before
+        you can read it is worse than no notification at all, and the complaint
+        that started this was exactly that (「按鈕有在 apple watch 收到通知，但
+        一下子就不見了」).  ``push``/``importance``/``ttl``/``group`` below are the
+        same shape Home Assistant's own mobile_app integration sends when a
+        notification must survive Focus and stay on the lock screen -- copied
+        from ``components/mobile_app/timers.py`` (Android keys + iOS
+        ``interruption-level: time-sensitive``), which is in-tree evidence for the
+        keys rather than a guess.  iOS needs 設定 → 通知 → Home Assistant →
+        時間敏感通知 for the iOS one to bite.
+        """
+        if not self.notify_targets:
+            return
+        data: dict[str, Any] = {
+            "tag": self._notify_tag,
+            "group": f"{DOMAIN}_{self.entry.entry_id}",
+            # Android: own channel, high importance, and no ttl expiry
+            "channel": "台電帳務",
+            "importance": "high",
+            "priority": "high",
+            "ttl": 0,
+            # iOS: break through Focus / 專注模式 and stay on the lock screen
+            "push": {"interruption-level": "time-sensitive"},
+        }
+        if actions:
+            data["actions"] = actions
+        for domain, service in self.notify_targets:
+            try:
+                await self.hass.services.async_call(
+                    domain,
+                    service,
+                    {"title": title, "message": message, "data": data},
+                    blocking=False,
+                )
+            except Exception as err:  # noqa: BLE001 - a mis-set target is not fatal
+                _LOGGER.warning(
+                    "%s: 無法發送通知到 %s.%s：%s（其餘目標與結算不受影響）",
+                    self.label,
+                    domain,
+                    service,
+                    err,
+                )
+
+    async def notify_pending_now(self) -> None:
+        """The actionable half of ``_notify_pending``.  Safe to call twice."""
+        entry_id = self.entry.entry_id
+        await self._async_send_to_phones(
+            message=self._pending_phone_message(),
+            title=f"台電 {self.label}：待確認結算",
+            actions=[
+                {"action": notify_action(ACTION_CONFIRM, entry_id), "title": "確認寫入"},
+                {"action": notify_action(ACTION_CANCEL, entry_id), "title": "取消"},
+            ],
+        )
+
+    async def notify_closed(self) -> dict | None:
+        """Follow-up after a 結算 lands, keeping an 撤銷 button on the phone.
+
+        This is the safety net for a mis-tap: the write has already happened, but
+        the same notification can take it back without opening Home Assistant.
+        Returns the reading the button will remove, so the caller can log it.
+        """
+        readings = self.readings
+        latest = readings[-1] if readings else None
+        if latest is None:
+            return None
+        await self._async_send_to_phones(
+            message=(
+                f"抄見日 {latest.get('date')} 已寫入，新的一期從 {self.period_start} 起算。\n"
+                f"若這不是你要的，按下面「撤銷這一期」即可退回。"
+            ),
+            title=f"台電 {self.label}：已結算",
+            actions=[
+                {
+                    "action": notify_action(ACTION_UNDO, self.entry.entry_id),
+                    "title": "撤銷這一期",
+                }
+            ],
+        )
+        return latest
+
+    async def notify_action_failed(self, kind: str, err: Exception) -> None:
+        """Say so on the phone when a notification button did not take effect.
+
+        The common case is an expired proposal (``PENDING_TTL``): the notification
+        is still sitting on the lock screen but the 15 minutes are up.  Pressing a
+        button that does nothing is the kind of silence that makes a feature
+        untrustworthy, so the failure is pushed back the same way.
+        """
+        await self._async_send_to_phones(
+            message=f"這個按鈕沒有生效：{err}",
+            title=f"台電 {self.label}：操作未完成",
+        )
+
+    async def notify_cancelled(self) -> None:
+        """Replace the proposal notification with the fact that it went away."""
+        await self._async_send_to_phones(
+            message="已取消，沒有寫入任何資料。",
+            title=f"台電 {self.label}：已取消結算",
+        )
+
+    async def notify_undone(self, removed: dict | None) -> None:
+        """Replace the 「已結算」 notification with the result of an undo."""
+        date = (removed or {}).get("date")
+        await self._async_send_to_phones(
+            message=(
+                f"已撤銷抄見日 {date}；本期回到 {self.period_start} → {self.period_end}。"
+                f"\n那一筆只是被移除，要加回來用 add_reading 或卡片上的日期欄即可。"
+            ),
+            title=f"台電 {self.label}：已撤銷",
+        )
+
     async def _notify_pending(self) -> None:
         try:
             await self.hass.services.async_call(
@@ -955,6 +1126,7 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
             self._notification_open = True
         except Exception as err:  # noqa: BLE001 - cosmetic only
             _LOGGER.warning("%s: 無法建立待確認通知：%s", self.label, err)
+        await self.notify_pending_now()
 
     async def _dismiss_pending_notification(self) -> None:
         if not self._notification_open:
@@ -1113,6 +1285,7 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
             note="close_period",
         )
         await self._dismiss_pending_notification()
+        await self.notify_closed()
         _LOGGER.info(
             "%s: 已結算 %s → %s（%s 度）；新的一期從 %s 起算",
             self.label,
@@ -1136,6 +1309,13 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         await self._dismiss_pending_notification()
         if had:
             _LOGGER.info("%s: 已取消待確認的結算（沒有寫入任何資料）", self.label)
+            await self.notify_cancelled()
+        # Refresh even when there was nothing to cancel: every sensor reports the
+        # proposal (``pending_close`` / ``pending_close_date``), and the 確認／取消
+        # buttons' availability flips on it too.  Without this the card keeps
+        # showing 待確認 until the next 5-minute poll, which is exactly the kind of
+        # stale panel that invites a second mis-tap.
+        await self.async_request_refresh()
         return {"cancelled": had}
 
     async def async_close_period(
@@ -1710,6 +1890,7 @@ class TaipowerDataUpdateCoordinator(DataUpdateCoordinator):
         await self.ledger.async_save()
         await self.async_publish_statistics()
         await self.async_request_refresh()
+        await self.notify_undone(removed)
         _LOGGER.info(
             "%s: 已撤銷抄見日 %s；本期回到 %s → %s",
             self.label,

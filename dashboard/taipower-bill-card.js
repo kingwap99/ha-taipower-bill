@@ -1,5 +1,5 @@
 /**
- * taipower-bill-card  (v0.2.0)
+ * taipower-bill-card  (v0.2.2)
  *
  * Plain-DOM Lovelace card (no lit, no build step, no external deps).
  * Reads the attributes published by the taipower_bill integration on any of its
@@ -12,6 +12,13 @@
  * early) no longer shifts anything. Closing a period is explicit and
  * reversible: propose a close (待確認) → confirm it, undo the last one, or
  * rewrite/recompute any past one.
+ *
+ * v0.2.2 is about not being able to get it wrong. The 撤銷按鈕 used to sit at the
+ * very bottom of 歷次帳期, behind the table, so a mis-tap looked permanent; it
+ * now has its own 撤銷 row in a fixed spot, and both card actions that change
+ * the ledger -- 確認寫入 and 撤銷 -- open a dialog that names the 抄見日 they are
+ * about to touch. (The card is the only place a confirmation can happen: Home
+ * Assistant has no confirmation step for a service call or a button entity.)
  *
  * Example configuration:
  *
@@ -140,7 +147,12 @@ class TaipowerBillCard extends HTMLElement {
 
   _ensureDom() {
     if (this._root) return;
-    this.attachShadow({ mode: "open" });
+    // Everything must go *into the shadow root*.  Appending to ``this`` instead
+    // puts the markup in the element's light DOM, and a shadow host with no
+    // ``<slot>`` renders none of it -- the card then draws literally nothing
+    // while every other symptom (entity found, no JS error, right height of 0)
+    // looks fine.  jsdom's ``shadowRoot.innerHTML === ""`` is what caught it.
+    const shadow = this.attachShadow({ mode: "open" });
     this._root = document.createElement("div");
     const card = document.createElement("ha-card");
     card.className = "tpc-card";
@@ -152,7 +164,7 @@ class TaipowerBillCard extends HTMLElement {
     this._body.appendChild(this._titleEl);
     card.appendChild(this._body);
     this._root.appendChild(card);
-    this.appendChild(this._root);
+    shadow.appendChild(this._root);
 
     this._nodes = this._nodes || {};
     this._sigs = this._sigs || {};
@@ -240,6 +252,13 @@ class TaipowerBillCard extends HTMLElement {
       button.danger{border-color:var(--error-color,#b00020);background:transparent;color:var(--error-color,#b00020)}
       button.tiny{font-size:11.5px;padding:2px 8px;border-radius:10px}
       .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+      /* 撤銷列: kept in one predictable place.  It used to live at the bottom of
+         the 歷次帳期 table, which is exactly why a mis-tap felt unrecoverable. */
+      .safety{margin-top:10px;padding:10px 12px;border-radius:8px;
+        border:1px dashed var(--divider-color,rgba(0,0,0,.22));
+        background:var(--secondary-background-color,rgba(0,0,0,.03))}
+      .safety .srow{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12.5px;color:var(--primary-text-color)}
+      .safety .srow b{font-weight:600}
       .rd{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12.5px;color:var(--primary-text-color);margin-top:6px}
       .rd b{font-weight:600}
       .empty{font-size:11.5px;color:var(--secondary-text-color);margin-top:6px}
@@ -270,6 +289,60 @@ class TaipowerBillCard extends HTMLElement {
     this._handle(btn.getAttribute("data-action"), btn.getAttribute("data-entity"), btn);
   }
 
+  /* ---------------------------------------------------------- confirmation */
+
+  /**
+   * The exact question a ledger-writing tap has to answer before it runs.
+   *
+   * Kept apart from the click plumbing on purpose: this *is* the safety rule --
+   * 「按下去之前，先講清楚會發生什麼」 -- and as a pure function of the entity's
+   * own attributes it can be asserted without a browser, in
+   * ``tests/test_card_render.mjs``.
+   *
+   * ``close_period`` deliberately returns ``null``: it only *proposes*, and
+   * nothing reaches the ledger until 確認寫入.  Asking there would train the user
+   * to dismiss the dialog that actually matters.
+   */
+  _confirmMessage(action, entity, btn) {
+    const st = this._hass && this._hass.states[entity];
+    const attrs = (st && st.attributes) || {};
+    const dataDate = str(btn && btn.getAttribute ? btn.getAttribute("data-date") : "");
+
+    if (action === "confirm") {
+      const pc = attrs.pending_close && typeof attrs.pending_close === "object"
+        ? attrs.pending_close
+        : {};
+      return `確定要把這筆結算寫入？\n\n` +
+        `· 帳期 ${str(pc.period_start, "—")} → ${str(pc.read_date, "—")}\n` +
+        `· 本期度數 ${fmt(pc.kwh, 1)} 度\n\n` +
+        `寫入後本期就會從 ${str(pc.read_date, "—")} 的隔天重新起算。\n` +
+        `（寫錯了也救得回來：按「撤銷最後一期」即可。）`;
+    }
+
+    if (action === "undo") {
+      // Name the date.  「確定要撤銷最後一期？」 on its own is not a
+      // confirmation, it is a dare -- you cannot tell what you are about to
+      // lose.  ``last_read_date`` is the date the coordinator would remove.
+      const date = dataDate || str(attrs.last_read_date) || "最後一期";
+      const back = str(attrs.readings && attrs.readings.length > 1
+        ? attrs.readings[attrs.readings.length - 2].date
+        : "");
+      return `確定要撤銷抄見日 ${date}？\n\n` +
+        `· 這筆會從抄見日清單移除，該期不會進歷史\n` +
+        `· 本期會從 ${back ? `${back} 的隔天` : "上一個抄見日"} 重新起算\n` +
+        `· 要加回來：在日期欄重新寫入 ${date} 即可\n\n` +
+        `（沒有寫入任何電費資料，只是把清單還原。）`;
+    }
+
+    if (action === "recompute") {
+      return dataDate
+        ? `確定要用目前的統計重新計算 ${dataDate} 這期？既有紀錄會被覆寫。`
+        : "確定要用目前的統計重新計算最近一期？既有紀錄會被覆寫。";
+    }
+
+    return null;
+  }
+
   async _handle(action, entity, btn) {
     if (!action || !entity) return;
     const ui = this._uiFor(entity);
@@ -280,6 +353,9 @@ class TaipowerBillCard extends HTMLElement {
       } else if (action === "toggle-tiers") {
         ui.tiersOpen = !ui.tiersOpen;
       } else if (action === "confirm") {
+        // This is the one card action that writes to the ledger, so it is the
+        // one that asks first -- and it states what it is about to record.
+        if (!window.confirm(this._confirmMessage("confirm", entity, btn))) return;
         await this._call(entity, "confirm_close", {});
         ui.readDate = "";
         ui.actualKwh = "";
@@ -290,15 +366,12 @@ class TaipowerBillCard extends HTMLElement {
       } else if (action === "close") {
         await this._close(entity, ui);
       } else if (action === "undo") {
-        if (window.confirm("確定要撤銷最後一期？這會刪除最近一次已寫入的抄見日，並把該期移出歷史。")) {
+        if (window.confirm(this._confirmMessage("undo", entity, btn))) {
           await this._call(entity, "undo_close_period", {});
         }
       } else if (action === "recompute") {
-        const date = str(btn.getAttribute("data-date"));
-        const msg = date
-          ? `確定要用目前的統計重新計算 ${date} 這期？既有紀錄會被覆寫。`
-          : "確定要用目前的統計重新計算最近一期？既有紀錄會被覆寫。";
-        if (window.confirm(msg)) {
+        if (window.confirm(this._confirmMessage("recompute", entity, btn))) {
+          const date = str(btn.getAttribute("data-date"));
           const data = { recompute: true };
           if (date) data.date = date;
           await this._call(entity, "update_reading", data);
@@ -511,6 +584,30 @@ class TaipowerBillCard extends HTMLElement {
       <div class="hint">按鈕只是快捷：真正的依據是下面的抄見日清單。日期可改，晚幾天才按也不會跑掉；提前按會用你選的日期當抄見日，未滿一期時才需要勾「強制結算」。</div>`;
     }
 
+    /* 3b. 撤銷最後一期 -- one predictable place for the rescue.
+       A button (entity or card) cannot ask "are you sure?" on its own, so this
+       one always opens the dialog above, which names the date it will remove.
+       Shown only when there is something to take back, so it never looks like a
+       no-op: ``last_read_date`` is the newest read date that has already
+       happened, which is precisely what ``undo_close_period`` removes. */
+    const lastRead = str(a.last_read_date);
+    if (!pending && lastRead) {
+      html += `<div class="safety">
+        <div class="srow">
+          <span>上一個抄見日 <b>${esc(lastRead)}</b></span>
+          <span>本期從 <b>${esc(str(a.period_start, "—"))}</b> 起算</span>
+        </div>
+        <div class="btns">
+          <button class="danger" data-action="undo" data-entity="${esc(
+            entity
+          )}" data-date="${esc(lastRead)}">撤銷最後一期（${esc(lastRead)}）</button>
+        </div>
+        <div class="hint">按下去會先跳確認對話框，確認後才移除 ${esc(
+          lastRead
+        )} 這筆抄見日；該期不會進歷史，本期會回到上一個抄見日的隔天。要加回來就重新寫入同一個日期。</div>
+      </div>`;
+    }
+
     if (ui.error) html += `<div class="err">${esc(ui.error)}</div>`;
 
     /* 4 + 6. history */
@@ -560,9 +657,6 @@ class TaipowerBillCard extends HTMLElement {
           </tr></thead>
           <tbody>${body}</tbody>
         </table></div>
-        <div class="btns">
-          <button class="danger" data-action="undo" data-entity="${esc(entity)}">撤銷最後一期</button>
-        </div>
       </div>`;
     } else {
       html += `<div class="section">

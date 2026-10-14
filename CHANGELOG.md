@@ -1,5 +1,99 @@
 # Changelog
 
+## 0.2.2 — 2026-10-14
+
+兩件事：**儀表板卡片從 v0.1.2 起就一直是空白的**（而且一點錯誤訊息都沒有），以及
+**「不小心按到結算」現在有三層救援**。
+
+### 1. 卡片從來沒有畫出來過（真 bug，比 v0.2.0 那四個還早）
+
+`_ensureDom()` 用 `this.attachShadow()` 開了 shadow root，卻把整份內容用
+`this.appendChild(this._root)` 掛到**元素自己的 light DOM**。shadow host 上沒有
+`<slot>`，所以瀏覽器**一個字都不會畫**：沒有 JS 錯誤、沒有 console 訊息、沒有缺 entity、
+高度 0。你在儀表板上看到的是一張空白卡（或根本看不到卡）。
+
+> 如果你先前「在卡片上找不到按鈕、只能去按實體按鈕」，原因就是這個。
+
+抓法：把卡片丟進 jsdom 真的跑一次，然後讀 `shadowRoot.innerHTML` —— **空的**，而
+`_body` 裡卻有 2,179 個字元的內容。這條線索就足以定位：**內容有生出來，只是生在不被
+渲染的那一半。**（`document.createElement` 有回傳、`setConfig` 沒拋錯、render 也沒拋錯，
+所以任何「有沒有錯誤」的檢查都會說一切正常。）
+
+修法一行：`shadow.appendChild(this._root)`。並新增 `tests/test_card_render.mjs`
+—— **26 項、不需要任何 npm 套件**（卡片是純 DOM，~60 行的 shim 就足以真的跑它），
+其中第一項斷言就是「內容必須在 shadow root 裡」。把那一行改回壞的版本，測試會紅：
+
+```
+AssertionError: the markup went into the shadow root, not the light DOM
+(light DOM children: 1, shadow children: 0)
+```
+
+### 2. 誤按結算的三層救援
+
+`結算` 一直是「先提出、再確認」，但「確認」本身按錯（或手機在口袋裡被按到）過去沒有退路。
+現在從**通知**、**卡片**、**實體按鈕**三個地方都救得回來：
+
+- **通知帶按鈕（Companion App）**：提出結算時推一則帶「確認寫入／取消」的通知。
+  HA 的核心通知沒有這個能力 —— 2026.10 的 `persistent_notification.async_create` 只收
+  `message`／`title`／`notification_id`，`Notification` 這個 TypedDict 也**沒有 `actions`
+  這個鍵**；能帶按鈕的只有 Companion App 的 `notify.mobile_app_*`。而按鈕按下去之後回來的
+  也只有一個事件（`mobile_app_notification_action`）與 `event.data.action` 一個字串
+  —— 核心自己的 `confirmable_notification.yaml` 藍圖也是靠這個（`CONFIRM_<context.id>`）。
+  所以動作字串**自己帶 entry id**：`TAIPOWER_CONFIRM_<entry_id>`／`_CANCEL_`／`_UNDO_`，
+  解析嚴格（前綴、種類、entry 都要對），**別人家的 `CONFIRM_…` 絕對不會寫到我們的帳本**。
+- **寫入之後立刻回一顆「撤銷這一期」**：真的按了確認，同一則通知就換成撤銷，不用開 HA。
+  按鈕失效時（最常見的是提案已過 15 分鐘）會回一則寫明原因的訊息，**不會靜默**。
+- **新增按鈕實體「撤銷最後一期」**（`button.<base>_undo_close_period`）：屬性
+  `will_remove` 直接寫出會被移除的抄見日、`can_undo`、`readings`；**有待確認結算時它會
+  `unavailable`**（那時該做的是「取消」），帳本空的時候也不給按。
+- **卡片**：常駐一列「撤銷最後一期（日期）」（在「歷次帳期」之前，不再藏進表格），
+  且「確認寫入」與「撤銷」都會跳 `window.confirm`，把**日期、度數、後果、怎麼補回來**
+  全部寫在問題裡。對話框的文案抽成純函式 `_confirmMessage()`，所以「按下去之前先問、
+  而且講清楚」這件事可以被離線斷言，不必開瀏覽器。
+- **選項新增「通知目標」**（多選，可自填）：下拉只列 `notify.mobile_app_*`，因為只有
+  Companion App 的通知能帶按鈕。**預設不推**，不填就跟以前一樣。
+
+### 3. 「按鈕有出現，但一下子就不見了」→ 通知要留得住
+
+回報原話：「按鈕有在 apple watch 收到通知，但一下子就不見了，手機則是完全沒訊息。」
+（按鈕有出現，代表 `data.actions` 這個做法本身是對的 —— 錯的是它留不住。）
+
+- **留得住**：通知的 `data` 現在帶上 `push.interruption-level: time-sensitive`
+  （iOS：穿透「專注模式」、留在鎖定畫面上）與 Android 的 `channel` / `importance: high` /
+  `ttl: 0`。這幾個鍵不是猜的 —— 是照抄 Home Assistant 自己的 `mobile_app` 在「這則通知不
+  能被漏掉」時用的同一組（`components/mobile_app/timers.py`）。iOS 另外要在
+  **設定 → 通知 → Home Assistant → 時間敏感通知** 打開，這一個鍵才會生效。
+- **一戶只有一則**：改用**單一 tag**（`taipower_bill_<entry_id>`）。iOS 上同 tag 是**取代**，
+  所以手機上永遠只有一則最新的 台電 通知：`待確認結算` →（按下確認）→`已結算（可撤銷）`
+  →（撤銷）→`已撤銷`。舊寫法用兩個 tag，會把過期的提案留在鎖定畫面上，按了只會回
+  「這個按鈕沒有生效」—— 那是在說實話，但看起來就像功能壞掉。
+- **手機沒訊息不是 bug**：戴著 Apple Watch 且手機鎖著時，iOS 只會把通知送到手錶，這是
+  iOS 的路由行為。要確認手機端也正常，把手錶拿下來再測一次，或直接看手機的
+  「通知中心」（沒有跳出橫幅時，它通常還在）。
+
+### 4. `cancel_close` 沒有重新整理（新測試抓到的）
+
+取消待確認結算之後，感測器與卡片還停留在舊的「待確認」狀態，直到下一次 5 分鐘輪詢
+—— 看起來像「取消了但沒用」。現在取消後會立刻要求更新（`async_request_refresh`）。
+
+### 測試
+
+- 新增 `tests/test_card_render.mjs`：**26 項**，跑真的卡片程式（自製 DOM shim，零外部依賴，
+  `node tests/test_card_render.mjs`）。它盯的是**看不到的失敗**：內容有沒有進 shadow root，
+  以及每個「會寫入帳本」的動作是不是都先問過、而且問到點上（結算只提出、不寫入，所以
+  它**不該**問 —— 問了只會訓練使用者亂按掉真正重要的那一個）。
+- `tests/test_coordinator.py` 從 218 擴充到 **240 項**（新增動作字串與通知目標的純函式）。
+- `tests/ha/` 從 24 擴充到 **32 項**：新增 `test_real_notify.py`，用真的 HA 註冊一個
+  假的通知服務、直接發事件，驗證整條「手機按鈕 → 寫入帳本」的路；也驗證**別人的動作字串
+  不會動到帳本**、失效的按鈕會回話、沒設定通知目標就完全不會推、以及「撤銷最後一期」
+  這顆實體的行為（含 `unavailable` 的時機）。實體總數 22 → **23**。
+
+### 升級
+
+覆蓋 `custom_components/taipower_bill/` 後重啟。**卡片要另外換**：把
+`dashboard/taipower-bill-card.js` 覆蓋到 `config/www/community/` 之後，
+在瀏覽器按 **Ctrl/Cmd + Shift + R** 一次（自訂資源有快取）。
+
 ## 0.2.1 — 2026-10-14
 
 **v0.2.0 裝上去完全不能用** —— 這版把「在真的 Home Assistant 上跑不起來」的四個原因修掉，
