@@ -341,11 +341,18 @@ HA 自己伺服的同源路徑 `/taipower-bill-card.js`（類型 JavaScript）�
 驗證的方法（不用猜，直接看 header）：
 
 ```bash
-curl -sSI https://raw.githubusercontent.com/kingwap99/ha-taipower-bill/v0.2.2/dashboard/taipower-bill-card.js | grep -i content-type
-# content-type: text/plain; charset=utf-8      ← 瀏覽器會拒收
-curl -sSI http://<你的HA>:8123/taipower-bill-card.js | grep -i content-type
-# content-type: text/javascript                 ← v0.2.3 起由 HA 伺服
+curl -sS -o /dev/null -w "%{http_code} %{content_type}\n" \
+  https://raw.githubusercontent.com/kingwap99/ha-taipower-bill/v0.2.2/dashboard/taipower-bill-card.js
+# 200 text/plain; charset=utf-8     ← 瀏覽器對 ES module 會拒收
+
+curl -sS -o /dev/null -w "%{http_code} %{content_type}\n" \
+  http://<你的HA>:8123/taipower-bill-card.js
+# 200 text/javascript               ← v0.2.3 起由 HA 伺服，這才是對的
 ```
+
+> **不要用 `curl -I`（HEAD）驗 HA 這一條。** Home Assistant 對單一檔案的靜態路由只註冊 GET，
+> HEAD 會回 `405 Method Not Allowed` ＋ `text/plain`，看了只會誤判成還沒修好。
+> 上面這種寫法是發 GET、只印狀態碼與 content-type，檔案內容不會進終端機。
 
 要自己驗證的話，在瀏覽器開發者工具裡選到 `taipower-bill-card` 那個元素，看它的
 `#shadow-root`：壞掉的版本裡面是空的，而 `childNodes` 卻有東西（東西都在不渲染的那一半）。
@@ -354,7 +361,7 @@ curl -sSI http://<你的HA>:8123/taipower-bill-card.js | grep -i content-type
 
 - 自訂資源的 URL 是 `/taipower-bill-card.js`，類型選 **JavaScript 模組（module）**；
   v0.2.3 起卡片由整合自己放在 `custom_components/taipower_bill/www/`，**不用再手動
-  複製檔案到 `config/www/`**（上面那條 `curl -sSI` 看到 `text/javascript` 就代表有伺服）。
+  複製檔案到 `config/www/`**（上面那條 GET 看到 `200 text/javascript` 就代表有伺服）。
 - 瀏覽器有沒有硬重新整理（自訂資源會被快取）。
 - 開發者工具的 Console 有沒有紅字；`type: custom:taipower-bill-card` 拼字是否正確。
 - 卡片的 `entity:` 指向的是**存在**的那顆感測器（指向不存在的那一顆，卡片會直接寫
