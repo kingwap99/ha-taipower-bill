@@ -29,7 +29,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SRC_PATH = join(ROOT, "dashboard", "taipower-bill-card.js");
+const SRC_PATH = join(ROOT, "custom_components", "taipower_bill", "www", "taipower-bill-card.js");
 
 let checks = 0;
 const ok = (cond, what) => {
@@ -245,5 +245,34 @@ const orphan = mount();
 orphan._hass = { states: {}, callService: async () => {} };
 orphan.hass = orphan._hass;
 ok(orphan.shadowRoot.text().includes("找不到"), "a missing entity renders an explanation");
+
+// 2. the card's own label wins over the sensor's internal 戶名 -------------
+// Live instance, v0.2.2: a household configured as "17 號" rendered "no17",
+// because the sensor's own `label` attribute was consulted first.
+const named = documentShim.createElement("taipower-bill-card");
+named.setConfig({ households: [{ entity: ENTITY, label: "17 號" }] });
+named._hass = {
+  states: { [ENTITY]: { state: "24.588", attributes: attrsFor({ label: "no17" }) } },
+  callService: async () => {},
+};
+named._sigs = {};
+named.hass = named._hass;
+const namedText = named.shadowRoot.text();
+ok(namedText.includes("17 號"), "the configured label is what the user sees");
+ok(!namedText.includes("no17"), "the integration's internal 戶名 does not shadow it");
+
+// 3. an early-period projection must not masquerade as a bill --------------
+// Three days of October data projected onto 63 days printed ~$1,052 against
+// real bills of $5,000-7,000, which read as a computation bug.
+const early = withState(
+  attrsFor({ days_elapsed: 3, days_remaining: 60, cycle_days: 63, projected_kwh: 516.3, projected_cost: 1052 }),
+);
+const earlyText = early.shadowRoot.text();
+ok(earlyText.includes("推估資料不足"), "a 3-day projection says it is under-evidenced");
+ok(earlyText.includes("僅 3 天"), "and says how few days it has");
+ok(!earlyText.includes("推估總電費"), "instead of printing a bill-shaped number");
+
+const mid = withState(attrsFor({ days_elapsed: 37, projected_kwh: 1295.2, projected_cost: 3692 }));
+ok(mid.shadowRoot.text().includes("推估總電費"), "once there is a week of data, it projects");
 
 console.log(`test_card_render: ${checks} checks passed`);

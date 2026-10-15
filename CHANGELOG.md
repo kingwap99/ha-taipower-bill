@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.2.3 — 2026-10-15
+
+**卡片在你線上那台 HA 從來沒有出现过 —— 根因是載入來源的 MIME type，不是卡片本身。**
+順手修掉同一頁另外兩個會讓人以為算錯的地方。
+
+### 1. `Custom element doesn't exist: taipower-bill-card`（真 bug，卡片的死因）
+
+README 之前叫你把自訂資源填成 GitHub 的 raw URL。那條 URL **永遠不可能成功**：
+
+```
+content-type: text/plain; charset=utf-8
+x-content-type-options: nosniff
+```
+
+瀏覽器對 ES module 會檢查 MIME，`text/plain` 加上 `nosniff` 就是**直接拒執行**，
+所以 `customElements.define()` 從來沒有跑過，Lovelace 才會一直報「custom element
+doesn't exist」。**跟你的網路無關** —— 同一支檔案、同一個 tag，raw 這條就是死的。
+
+修法：卡片改放在整合自己裡面（`custom_components/taipower_bill/www/`），由
+Home Assistant 以**同源**伺服。HA 的 static handler 回的是 `text/javascript`
+（拿他線上那台 2026.10.1 實測對照過 `/local/` 的 header）。
+`__init__.py` 的 `async_setup` 用 `hass.http.async_register_static_paths()` 註冊
+`/taipower-bill-card.js`，並刻意用 `cache_headers=False`，這樣 HACS 升級後
+重新整理就吃到新檔，不會被一年的 immutable cache 釘死。
+
+自訂資源从此只要填 `/taipower-bill-card.js`、類型 **JavaScript**，**不用再手動複製檔案**。
+（HA 2026.10 的註冊介面是 `async_register_static_paths`（複數）＋
+`StaticPathConfig(url_path, path, cache_headers)`，讀過 `components/http/server.py:367`
+與 `:77` 才下筆。）
+
+### 2. 卡片把你設的門牌蓋掉了
+
+`_renderHousehold()` 取標題的順序是「感測器自己的 `label` 優先」，所以他設
+`17 號` 卻看到整合內部的戶名 `no17`。改成**卡片自己設的 `label` 優先**，
+感測器屬性退回第二順位。
+
+### 3. 期初的「推估」看起來像 bug
+
+本期才過 3 天就拿去乘 63 天，推出 `NT$1,052`，對他實際每季 $5,000～7,000
+的電費單來說完全不可信。現在 `days_elapsed < 7` 時顯示
+**「推估資料不足（僅 N 天）」**，不再吐一個長得像帳單數字的東西。
+
+### 驗證
+
+`tests/test_card_render.mjs` 從 26 條增加到 **32 條**，並對新增的每條做
+**反向驗證**（把修復改回舊行為，確認測試真的紅）：
+
+```
+變異 A（退回 label 優先序）→ AssertionError: the configured label is what the user sees
+變異 B（關掉推估防護）      → AssertionError: a 3-day projection says it is under-evidenced
+```
+
+原本那條 label 測試抓不到這個 bug，是因為 fixture 把 `attrs.label` 和
+config 的 `label` 設成**同一個字串**，優先序從來沒被考驗過 —— 新測試刻意讓兩者不同。
+
+### 升級
+
+HACS 更新 → 重啟 HA → 瀏覽器 **Ctrl/Cmd + Shift + R**。
+自訂資源改成 `/taipower-bill-card.js`。卡片版本對照檔案開頭
+`taipower-bill-card  (v0.2.3)`。
+
+---
+
 ## 0.2.2 — 2026-10-14
 
 兩件事：**儀表板卡片從 v0.1.2 起就一直是空白的**（而且一點錯誤訊息都沒有），以及

@@ -7,7 +7,7 @@
   "issue_tracker": "https://github.com/kingwap99/ha-taipower-bill/issues",
   "integration_type": "service",
   "iot_class": "calculated",
-  "after_dependencies": ["recorder"],
+  "after_dependencies": ["recorder", "http"],
   "requirements": [],
-  "version": "0.2.2"
+  "version": "0.2.3"
 }

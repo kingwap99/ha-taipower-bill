@@ -79,13 +79,22 @@ Home Assistant 自訂整合。把家中電表／能源監測（例如 Emporia Vu
 
 ### 加掛儀表板卡片（選用）
 
-把 `dashboard/taipower-bill-card.js` 複製到 `config/www/community/taipower-bill-card.js`，
-然後 **設定 → 儀表板 → 右上角三點 → 自訂資源**，新增
-URL `/local/community/taipower-bill-card.js`、類型 **JavaScript**。
+從 **v0.2.3** 起卡片就放在整合自己裡面（`custom_components/taipower_bill/www/`），
+由 Home Assistant 以**同源、正確的 `text/javascript`** 伺服，所以**不用手動複製任何檔案**。
+只要到 **設定 → 儀表板 → 右上角三點 → 自訂資源**，新增：
 
-**升級時卡片要另外換檔案**（它不在整合資料夾裡），換完在瀏覽器按一次
-**Ctrl/Cmd + Shift + R** —— 自訂資源會被快取。卡片的版本寫在檔案開頭的註解裡
-（`taipower-bill-card  (v0.2.2)`），可以拿它對照你有沒有換成功。
+- URL：`/taipower-bill-card.js`
+- 類型：**JavaScript 模組（module）**
+
+> **為什麼不能直接貼 GitHub 的 raw URL**（v0.2.2 之前 README 這樣寫，是錯的）：
+> `raw.githubusercontent.com` 回的是 `content-type: text/plain` **加上**
+> `x-content-type-options: nosniff`，瀏覽器對 ES module 會直接**拒執行**，
+> Lovelace 就顯示 `Custom element doesn't exist: taipower-bill-card`。
+> 這條是實測出來的：同一支檔案兩條 URL 的 header 一比就看出來。
+
+升級時**只要更新整合**（HACS 或手動覆蓋），重新啟動 HA，再按一次
+**Ctrl/Cmd + Shift + R** 清瀏覽器快取即可。卡片版本寫在檔案開頭註解
+（`taipower-bill-card  (v0.2.3)`），可以拿它對照有沒有換成功。
 
 ---
 
@@ -318,15 +327,34 @@ response_variable: june
 
 v0.1.2 到 v0.2.1 的卡片有一個 bug：內容被掛在 shadow root **外面**，而 shadow host 上沒有
 `<slot>`，所以瀏覽器**完全不會畫**，也不會報錯。**如果你那一版的卡片是一片空白，就是它**
-—— 換上 v0.2.2 的 `dashboard/taipower-bill-card.js`（再 Ctrl/Cmd + Shift + R）就會出現。
+—— 換上 **v0.2.2**（再 Ctrl/Cmd + Shift + R）就會出現。
+
+### 出現 `Custom element doesn't exist: taipower-bill-card`（v0.2.2 以前）
+
+這是**載入來源**的問題，不是卡片本身。自訂資源如果填的是 GitHub 的 raw URL
+（`https://raw.githubusercontent.com/.../dashboard/taipower-bill-card.js`），
+GitHub 回的是 `content-type: text/plain` **加** `x-content-type-options: nosniff`，
+瀏覽器對 ES module 一律**拒執行**，於是元素從來沒有 `customElements.define()` 成功過，
+Lovelace 就報「custom element doesn't exist」。**升級到 v0.2.3**，把自訂資源改成
+HA 自己伺服的同源路徑 `/taipower-bill-card.js`（類型 JavaScript）就好了。
+
+驗證的方法（不用猜，直接看 header）：
+
+```bash
+curl -sSI https://raw.githubusercontent.com/kingwap99/ha-taipower-bill/v0.2.2/dashboard/taipower-bill-card.js | grep -i content-type
+# content-type: text/plain; charset=utf-8      ← 瀏覽器會拒收
+curl -sSI http://<你的HA>:8123/taipower-bill-card.js | grep -i content-type
+# content-type: text/javascript                 ← v0.2.3 起由 HA 伺服
+```
 
 要自己驗證的話，在瀏覽器開發者工具裡選到 `taipower-bill-card` 那個元素，看它的
 `#shadow-root`：壞掉的版本裡面是空的，而 `childNodes` 卻有東西（東西都在不渲染的那一半）。
 
 如果換了新卡片還是空白，依序檢查：
 
-- 自訂資源的 URL 是 `/local/community/taipower-bill-card.js`，類型選 **JavaScript**；
-  檔案真的在 `config/www/community/` 底下（`/local/` 對應的是 `config/www/`）。
+- 自訂資源的 URL 是 `/taipower-bill-card.js`，類型選 **JavaScript 模組（module）**；
+  v0.2.3 起卡片由整合自己放在 `custom_components/taipower_bill/www/`，**不用再手動
+  複製檔案到 `config/www/`**（上面那條 `curl -sSI` 看到 `text/javascript` 就代表有伺服）。
 - 瀏覽器有沒有硬重新整理（自訂資源會被快取）。
 - 開發者工具的 Console 有沒有紅字；`type: custom:taipower-bill-card` 拼字是否正確。
 - 卡片的 `entity:` 指向的是**存在**的那顆感測器（指向不存在的那一顆，卡片會直接寫

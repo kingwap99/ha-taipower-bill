@@ -19,10 +19,12 @@ and ``period_report`` (recompute any window from the recorder on demand).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import voluptuous as vol
 
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
@@ -335,15 +337,31 @@ def _async_register_services(hass: HomeAssistant) -> None:
 EVENT_MOBILE_APP_ACTION = "mobile_app_notification_action"
 
 
-async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Register the notification-button listener once per HA instance.
+#: URL the Lovelace card is served from, same-origin.  The card file ships
+#: inside this integration (``www/``) precisely because a GitHub *raw* URL does
+#: not work for an ES module: ``raw.githubusercontent.com`` answers with
+#: ``content-type: text/plain`` **and** ``x-content-type-options: nosniff``, so
+#: the browser refuses to execute it and Lovelace reports
+#: ``Custom element doesn't exist: taipower-bill-card``.  Home Assistant's own
+#: static handler serves ``text/javascript`` (verified against a live 2026.10
+#: instance), which is the only thing that makes ``res_type: module`` load.
+CARD_URL = "/taipower-bill-card.js"
 
-    Registered here rather than per config entry because the event is global: one
+_CARD_PATH = str(Path(__file__).parent / "www" / "taipower-bill-card.js")
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Register the notification-button listener and the card asset once.
+
+    Registered here rather than per config entry because both are global: one
     listener serves every 戶, and entries added later need nothing.  ``hass`` is
     captured in the closure on purpose -- ``Event`` carries no ``hass`` attribute
     in HA 2026.10 (``homeassistant.core.Event.__init__`` takes only the type, the
     data and an optional context), so a module-level listener could not resolve
     the instance whose entry the action names.
+
+    ``cache_headers=False`` so a HACS upgrade takes effect on the next reload
+    instead of being pinned by a year-long immutable cache header.
     """
 
     async def _handle(event) -> None:
@@ -351,6 +369,14 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
     hass.bus.async_listen(EVENT_MOBILE_APP_ACTION, _handle)
     _async_register_services(hass)
+
+    http = getattr(hass, "http", None)
+    if http is not None:
+        await http.async_register_static_paths(
+            [StaticPathConfig(CARD_URL, _CARD_PATH, cache_headers=False)]
+        )
+    else:  # pragma: no cover - the http integration is an after_dependency
+        _LOGGER.warning("http 整合未載入，無法伺服 %s，Lovelace 卡片不會出現。", CARD_URL)
     return True
 
 

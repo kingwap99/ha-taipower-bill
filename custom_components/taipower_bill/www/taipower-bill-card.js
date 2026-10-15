@@ -1,5 +1,5 @@
 /**
- * taipower-bill-card  (v0.2.2)
+ * taipower-bill-card  (v0.2.3)
  *
  * Plain-DOM Lovelace card (no lit, no build step, no external deps).
  * Reads the attributes published by the taipower_bill integration on any of its
@@ -19,6 +19,17 @@
  * the ledger -- 確認寫入 and 撤銷 -- open a dialog that names the 抄見日 they are
  * about to touch. (The card is the only place a confirmation can happen: Home
  * Assistant has no confirmation step for a service call or a button entity.)
+ *
+ * v0.2.3 fixes why the card never appeared at all on a real instance. It used to
+ * be loaded from raw.githubusercontent.com, which answers with
+ * `content-type: text/plain` AND `x-content-type-options: nosniff`, so the browser
+ * refuses to execute it as an ES module and Lovelace reports
+ * `Custom element doesn't exist`. The card now ships inside this integration under
+ * `www/` and Home Assistant serves it same-origin as `text/javascript`, so a HACS
+ * upgrade is the only step. Two smaller fixes: a household's configured `label`
+ * beats the sensor's internal 戶名 (it used to render `no17` over `17 號`), and a
+ * projection made from under a week of data now says 推估資料不足 instead of
+ * printing a bill-shaped number that reads as a bug.
  *
  * Example configuration:
  *
@@ -455,7 +466,10 @@ class TaipowerBillCard extends HTMLElement {
   _renderHousehold(hh, a, st) {
     const entity = hh.entity;
     const ui = this._uiFor(entity);
-    const label = str(a.label) || str(hh.label) || "戶別";
+    // The card's own label wins: the sensor attribute is the integration's
+    // internal 戶名 (``no17``), and a household configured as ``17 號`` should
+    // read ``17 號``.  Fall back to the attribute, then a generic word.
+    const label = str(hh.label) || str(a.label) || "戶別";
 
     if (!st) {
       return `<div class="section-head"><span>${esc(label)}</span><span class="badge">找不到實體</span></div>
@@ -516,8 +530,16 @@ class TaipowerBillCard extends HTMLElement {
       <span>平均每日 <b>${fmt(a.avg_daily_kwh, 1)}</b> 度</span>
       <span>每度均價 <b>${price(a.avg_price_per_kwh)}</b> 元</span>
       <span>下一度 <b>${price(a.marginal_price_per_kwh)}</b> 元</span>
-      <span>推估總度數 <b>${fmt(a.projected_kwh, 1)}</b> 度</span>
-      <span>推估總電費 <b>${money(a.projected_cost)}</b></span>
+      ${
+        /* Projecting a 63-day bill off the first few days is misleading: an
+           early-period sample (3 days in October) projected ~$1,052 against real
+           bills of $5,000-7,000.  Below a week of data we say so instead of
+           printing a number that looks like a bug. */
+        elapsed < 7
+          ? `<span class="badge">推估資料不足（僅 ${elapsed} 天）</span>`
+          : `<span>推估總度數 <b>${fmt(a.projected_kwh, 1)}</b> 度</span>
+      <span>推估總電費 <b>${money(a.projected_cost)}</b></span>`
+      }
       ${
         num(a.actual_bill) !== null
           ? `<span>帳單金額 <b>${money(a.actual_bill)}</b></span>`
